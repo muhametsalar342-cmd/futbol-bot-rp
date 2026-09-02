@@ -1,3950 +1,4413 @@
 const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  PermissionsBitField,
-  ChannelType
+    Client,
+    GatewayIntentBits,
+    Partials,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    PermissionFlagsBits,
+    ChannelType,
+    ActivityType
 } = require("discord.js");
 
 const fs = require("fs");
+const path = require("path");
 
 /* =========================================================
-   UNITED LEAGUE BOT
+   UNITED LEAGUE • FUTBOL RP BOT
    Discord.js v14
-   Prefix: .
    ========================================================= */
 
 const TOKEN = process.env.TOKEN;
-const PREFIX = ".";
 
-const ANNOUNCE_CHANNEL_ID = "1544653653330108477";
-
-const ROLE = {
-  YONETICI: "1544449436011339806",
-  KAYIT: "1544452022764568656",
-  DEGER: "1544451743746891806"
-};
-
-/* =========================================================
-   CLIENT
-   ========================================================= */
+if (!TOKEN) {
+    console.error("TOKEN bulunamadı.");
+    process.exit(1);
+}
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
-  ],
-  partials: [Partials.Channel]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ],
+    partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
 });
 
-/* =========================================================
-   DATABASE
-   ========================================================= */
+/* =========================
+   AYARLAR
+========================= */
 
-const DATA_FILE = "./data.json";
+const CONFIG = {
+    NAME: "United League | Futbol Rp",
 
-const defaultData = {
-  players: {},
-  teams: {},
-  transfers: [],
-  kap: {},
-  matches: [],
-  giveaways: [],
-  companies: {},
-  sponsors: {},
-  ads: [],
-  tickets: {},
-  season: 1
+    ANNOUNCEMENT_CHANNEL_ID: "1544653653330108477",
+
+    ROLES: {
+        ADMIN: "1544449436011339806",
+        REGISTER: "1544452022764568656",
+        VALUE: "1544451743746891806"
+    },
+
+    START_PLAYER_VALUE: 1000000,
+    START_PLAYER_BUDGET: 10000000,
+    START_TEAM_BUDGET: 100000000,
+
+    TRAINING_REWARD: 3000000,
+    PENALTY_REWARD: 2000000,
+
+    MATCH_DURATION: 300000,
+
+    PREFIX: "."
 };
 
-let db;
+/* =========================
+   VERİ
+========================= */
 
-if (fs.existsSync(DATA_FILE)) {
-  try {
-    db = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch {
-    db = defaultData;
-  }
-} else {
-  db = defaultData;
-}
+const DATA_FILE = path.join(__dirname, "data.json");
 
-function save() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
-}
-
-/* =========================================================
-   MONEY
-   ========================================================= */
-
-function parseMoney(value) {
-  if (!value) return NaN;
-
-  let text = String(value)
-    .replace(/€/g, "")
-    .replace(/,/g, ".")
-    .trim()
-    .toUpperCase();
-
-  const match = text.match(/^(-?\d+(?:\.\d+)?)\s*(K|M|B)?$/);
-
-  if (!match) return NaN;
-
-  const number = parseFloat(match[1]);
-  const unit = match[2] || "";
-
-  const multiplier = {
-    K: 1000,
-    M: 1000000,
-    B: 1000000000,
-    "": 1
-  }[unit];
-
-  return Math.round(number * multiplier);
-}
-
-function money(value) {
-  value = Number(value) || 0;
-
-  if (value >= 1000000000) {
-    return `${+(value / 1000000000).toFixed(2)}B€`;
-  }
-
-  if (value >= 1000000) {
-    return `${+(value / 1000000).toFixed(2)}M€`;
-  }
-
-  if (value >= 1000) {
-    return `${+(value / 1000).toFixed(2)}K€`;
-  }
-
-  return `${Math.round(value)}€`;
-}
-
-/* =========================================================
-   PLAYER DATA
-   ========================================================= */
-
-function getPlayer(id) {
-  if (!db.players[id]) {
-    db.players[id] = {
-      value: 0,
-      budget: 0,
-      training: 0,
-      matches: 0,
-      goals: 0,
-      assists: 0,
-      penalties: 0,
-      penaltyGoals: 0,
-      xp: 0,
-      trophies: 0,
-      achievements: [],
-      team: null,
-      position: "Yok"
-    };
-  }
-
-  return db.players[id];
-}
-
-function addXP(id, amount) {
-  const player = getPlayer(id);
-  player.xp += amount;
-}
-
-/* =========================================================
-   NICKNAME
-   ========================================================= */
-
-async function updateValueNickname(member, value) {
-  if (!member) return;
-
-  const oldName = member.nickname || member.user.username;
-
-  const parts = oldName
-    .split("|")
-    .map(x => x.trim());
-
-  const last = parts[parts.length - 1];
-
-  if (/^-?\d+(?:\.\d+)?(?:K|M|B)?€$/i.test(last)) {
-    parts[parts.length - 1] = money(value);
-  } else {
-    parts.push(money(value));
-  }
-
-  await member
-    .setNickname(parts.join(" | "))
-    .catch(() => {});
-}
-
-/* =========================================================
-   PERMISSIONS
-   ========================================================= */
-
-function isAdmin(message) {
-  return (
-    message.memberPermissions?.has(
-      PermissionsBitField.Flags.Administrator
-    ) ||
-    message.member?.roles.cache.has(ROLE.YONETICI)
-  );
-}
-
-function hasRole(message, roleId) {
-  return message.member?.roles.cache.has(roleId);
-}
-
-function canRegister(message) {
-  return isAdmin(message) || hasRole(message, ROLE.KAYIT);
-}
-
-function canValue(message) {
-  return isAdmin(message) || hasRole(message, ROLE.DEGER);
-}
-
-/* =========================================================
-   EMBED
-   ========================================================= */
-
-function makeEmbed(title, description) {
-  return new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
-    .setColor(0x5865f2)
-    .setTimestamp()
-    .setFooter({
-      text: "United League"
-    });
-}
-
-/* =========================================================
-   TEAM
-   ========================================================= */
-
-function getTeamByOwner(id) {
-  return Object.values(db.teams).find(
-    team => team.owner === id
-  );
-}
-
-function getTeamByName(name) {
-  if (!name) return null;
-
-  return Object.values(db.teams).find(
-    team =>
-      team.name.toLowerCase() ===
-      name.toLowerCase()
-  );
-}
-
-function ensureTeam(team) {
-  team.budget ??= 100000000;
-  team.players ??= [];
-  team.formation ??= "4-3-3";
-  team.positions ??= {};
-  team.stats ??= {
-    played: 0,
-    wins: 0,
-    draws: 0,
-    losses: 0,
-    gf: 0,
-    ga: 0
-  };
-}
-
-/* =========================================================
-   FORMATIONS
-   ========================================================= */
-
-const FORMATIONS = {
-  "4-3-3": [
-    "GK",
-    "RB",
-    "CB",
-    "CB",
-    "LB",
-    "CM",
-    "CM",
-    "CAM",
-    "RW",
-    "ST",
-    "LW"
-  ],
-
-  "4-4-2": [
-    "GK",
-    "RB",
-    "CB",
-    "CB",
-    "LB",
-    "RM",
-    "CM",
-    "CM",
-    "LM",
-    "ST",
-    "ST"
-  ],
-
-  "4-2-3-1": [
-    "GK",
-    "RB",
-    "CB",
-    "CB",
-    "LB",
-    "CDM",
-    "CDM",
-    "RW",
-    "CAM",
-    "LW",
-    "ST"
-  ],
-
-  "3-5-2": [
-    "GK",
-    "CB",
-    "CB",
-    "CB",
-    "RWB",
-    "CM",
-    "CAM",
-    "CM",
-    "LWB",
-    "ST",
-    "ST"
-  ],
-
-  "3-4-3": [
-    "GK",
-    "CB",
-    "CB",
-    "CB",
-    "RM",
-    "CM",
-    "CM",
-    "LM",
-    "RW",
-    "ST",
-    "LW"
-  ],
-
-  "5-3-2": [
-    "GK",
-    "RWB",
-    "CB",
-    "CB",
-    "CB",
-    "LWB",
-    "CM",
-    "CM",
-    "CAM",
-    "ST",
-    "ST"
-  ]
+let data = {
+    players: {},
+    teams: {},
+    transfers: [],
+    matches: [],
+    giveaways: {},
+    companies: {},
+    sponsors: {},
+    ads: {},
+    tickets: {},
+    season: {
+        number: 1,
+        startedAt: Date.now()
+    }
 };
 
-const POSITIONS = [
-  "GK",
-  "RB",
-  "CB",
-  "LB",
-  "RWB",
-  "LWB",
-  "CDM",
-  "CM",
-  "CAM",
-  "RM",
-  "LM",
-  "RW",
-  "LW",
-  "ST",
-  "CF"
-];
+function loadData() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const saved = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
 
-/* =========================================================
-   NPC COMPANIES / SPONSORS
-   ========================================================= */
-
-const BRANDS = {
-  Emirates: {
-    companyChance: 65,
-    sponsorChance: 65,
-    budget: 50000000
-  },
-
-  Adidas: {
-    companyChance: 60,
-    sponsorChance: 75,
-    budget: 45000000
-  },
-
-  Puma: {
-    companyChance: 55,
-    sponsorChance: 55,
-    budget: 35000000
-  },
-
-  Nike: {
-    companyChance: 50,
-    sponsorChance: 65,
-    budget: 40000000
-  },
-
-  "Coca-Cola": {
-    companyChance: 45,
-    sponsorChance: 50,
-    budget: 30000000
-  },
-
-  Pepsi: {
-    companyChance: 40,
-    sponsorChance: 45,
-    budget: 25000000
-  },
-
-  "Red Bull": {
-    companyChance: 35,
-    sponsorChance: 55,
-    budget: 30000000
-  },
-
-  Mercedes: {
-    companyChance: 30,
-    sponsorChance: 40,
-    budget: 50000000
-  }
-};
-
-/* =========================================================
-   DURATION
-   ========================================================= */
-
-function parseDuration(text) {
-  if (!text) return NaN;
-
-  const match = text
-    .toLowerCase()
-    .match(/^(\d+(?:\.\d+)?)(s|sn|dk|m|sa|h)$/);
-
-  if (!match) return NaN;
-
-  const number = Number(match[1]);
-  const unit = match[2];
-
-  const units = {
-    s: 1000,
-    sn: 1000,
-    dk: 60000,
-    m: 60000,
-    sa: 3600000,
-    h: 3600000
-  };
-
-  return number * units[unit];
+            data = {
+                ...data,
+                ...saved,
+                players: saved.players || {},
+                teams: saved.teams || {},
+                transfers: saved.transfers || [],
+                matches: saved.matches || [],
+                giveaways: saved.giveaways || {},
+                companies: saved.companies || {},
+                sponsors: saved.sponsors || {},
+                ads: saved.ads || {},
+                tickets: saved.tickets || {},
+                season: saved.season || {
+                    number: 1,
+                    startedAt: Date.now()
+                }
+            };
+        }
+    } catch (err) {
+        console.error("data.json okunamadı:", err);
+    }
 }
 
-/* =========================================================
-   LOG
-   ========================================================= */
-
-async function logAction(guild, text) {
-  const channel = guild.channels.cache.find(
-    channel =>
-      channel.isTextBased() &&
-      /log|kayıt-log|kayit-log/i.test(channel.name || "")
-  );
-
-  if (!channel) return;
-
-  channel
-    .send({
-      embeds: [
-        makeEmbed(
-          "📜 United League Log",
-          text
-        )
-      ]
-    })
-    .catch(() => {});
+function saveData() {
+    try {
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify(data, null, 2),
+            "utf8"
+        );
+    } catch (err) {
+        console.error("Veri kaydedilemedi:", err);
+    }
 }
 
-/* =========================================================
-   HOURLY BOT STATUS
-   ========================================================= */
+loadData();
 
-async function sendHourlyStatus() {
-  const channel = await client.channels
-    .fetch(ANNOUNCE_CHANNEL_ID)
-    .catch(() => null);
+/* =========================
+   YARDIMCI FONKSİYONLAR
+========================= */
 
-  if (!channel || !channel.isTextBased()) return;
+function getPlayer(userId) {
+    if (!data.players[userId]) {
+        data.players[userId] = {
+            value: CONFIG.START_PLAYER_VALUE,
+            budget: CONFIG.START_PLAYER_BUDGET,
+            training: 0,
+            penaltyGoals: 0,
+            xp: 0,
+            level: 1,
+            matches: 0,
+            goals: 0,
+            assists: 0,
+            trophies: 0,
+            achievements: [],
+            teamId: null,
+            registered: false,
+            roleType: null
+        };
+    }
 
-  const ping = client.ws.ping;
+    const p = data.players[userId];
 
-  const totalMembers =
-    client.guilds.cache.reduce(
-      (total, guild) =>
-        total + (guild.memberCount || 0),
-      0
-    );
+    p.value ??= CONFIG.START_PLAYER_VALUE;
+    p.budget ??= CONFIG.START_PLAYER_BUDGET;
+    p.training ??= 0;
+    p.penaltyGoals ??= 0;
+    p.xp ??= 0;
+    p.level ??= 1;
+    p.matches ??= 0;
+    p.goals ??= 0;
+    p.assists ??= 0;
+    p.trophies ??= 0;
+    p.achievements ??= [];
+    p.teamId ??= null;
 
-  const uptime = Math.floor(process.uptime());
-
-  const hours = Math.floor(
-    uptime / 3600
-  );
-
-  const minutes = Math.floor(
-    (uptime % 3600) / 60
-  );
-
-  channel.send({
-    embeds: [
-      makeEmbed(
-        "🤖 UNITED LEAGUE — BOT DURUMU",
-        `🟢 **Bot Durumu:** Aktif
-🏓 **Ping:** ${ping}ms
-👥 **Toplam Üye:** ${totalMembers}
-⏱️ **Uptime:** ${hours} saat ${minutes} dakika
-⚽ **Sistemler:** Aktif
-
-**United League • Otomatik Durum Bildirimi**`
-      )
-    ]
-  }).catch(() => {});
+    return p;
 }
 
-/* =========================================================
-   READY
-   ========================================================= */
+function getTeam(teamId) {
+    return data.teams[teamId] || null;
+}
 
-client.once("ready", () => {
-  console.log(
-    `✅ United League aktif: ${client.user.tag}`
-  );
+function parseMoney(input) {
+    if (!input) return 0;
 
-  const now = new Date();
+    let value = String(input)
+        .toUpperCase()
+        .replace(/€/g, "")
+        .replace(/\s/g, "")
+        .replace(/,/g, ".");
 
-  const millisecondsUntilHour =
-    (60 - now.getMinutes()) * 60000 -
-    now.getSeconds() * 1000 -
-    now.getMilliseconds();
+    let multiplier = 1;
 
-  setTimeout(() => {
-    sendHourlyStatus();
+    if (value.endsWith("B")) {
+        multiplier = 1000000000;
+        value = value.slice(0, -1);
+    } else if (value.endsWith("M")) {
+        multiplier = 1000000;
+        value = value.slice(0, -1);
+    } else if (value.endsWith("K")) {
+        multiplier = 1000;
+        value = value.slice(0, -1);
+    }
 
-    setInterval(
-      sendHourlyStatus,
-      60 * 60 * 1000
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) return 0;
+
+    return Math.round(number * multiplier);
+}
+
+function formatMoney(value) {
+    value = Number(value) || 0;
+
+    if (value >= 1000000000) {
+        return `${parseFloat((value / 1000000000).toFixed(2))}B€`;
+    }
+
+    if (value >= 1000000) {
+        return `${parseFloat((value / 1000000).toFixed(2))}M€`;
+    }
+
+    if (value >= 1000) {
+        return `${parseFloat((value / 1000).toFixed(2))}K€`;
+    }
+
+    return `${Math.round(value)}€`;
+}
+
+function randomColor() {
+    const colors = [
+        "#5865F2",
+        "#57F287",
+        "#FEE75C",
+        "#EB459E",
+        "#ED4245",
+        "#00B0F4",
+        "#9B59B6",
+        "#E67E22"
+    ];
+
+    return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function isAdmin(member) {
+    return (
+        member.permissions.has(PermissionFlagsBits.Administrator) ||
+        member.roles.cache.has(CONFIG.ROLES.ADMIN)
     );
-  }, Math.max(1000, millisecondsUntilHour));
-});
+}
 
-/* =========================================================
-   MEMBER JOIN
-   ========================================================= */
-
-client.on("guildMemberAdd", async member => {
-  const unregistered =
-    member.guild.roles.cache.find(
-      role =>
-        role.name.toLowerCase() ===
-        "kayıtsız"
+function hasRole(member, roleId, roleName) {
+    return (
+        isAdmin(member) ||
+        (roleId && member.roles.cache.has(roleId)) ||
+        (roleName && member.roles.cache.some(r => r.name === roleName))
     );
+}
 
-  if (unregistered) {
-    await member.roles
-      .add(unregistered)
-      .catch(() => {});
-  }
-
-  getPlayer(member.id);
-  save();
-
-  const registrationChannel =
-    member.guild.channels.cache.find(
-      channel =>
-        channel.isTextBased() &&
-        /kayıt|kayit/i.test(
-          channel.name || ""
-        )
+function isRegisterStaff(member) {
+    return hasRole(
+        member,
+        CONFIG.ROLES.REGISTER,
+        "Kayıt Yetkilisi"
     );
+}
 
-  if (registrationChannel) {
-    registrationChannel.send({
-      embeds: [
-        makeEmbed(
-          "👋 Yeni Oyuncu Geldi",
-          `${member} sunucuya katıldı.
-
-📝 **Kayıt Yetkilisi:** <@&${ROLE.KAYIT}>
-
-Oyuncunun kaydını gerçekleştirebilirsiniz.`
-        )
-      ]
-    }).catch(() => {});
-  }
-});
-
-/* =========================================================
-   BUTTONS
-   ========================================================= */
-
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isButton()) return;
-
-  /* KAYIT */
-
-  if (
-    interaction.customId ===
-      "register_player" ||
-    interaction.customId ===
-      "register_td"
-  ) {
-    if (
-      !interaction.member.roles.cache.has(
-        ROLE.KAYIT
-      ) &&
-      !interaction.memberPermissions?.has(
-        PermissionsBitField.Flags.Administrator
-      )
-    ) {
-      return interaction.reply({
-        content:
-          "❌ Bu butonu sadece Kayıt Yetkilisi kullanabilir.",
-        ephemeral: true
-      });
-    }
-
-    const playerRole =
-      interaction.guild.roles.cache.find(
-        role =>
-          role.name.toLowerCase() ===
-          "futbolcu"
-      );
-
-    const tdRole =
-      interaction.guild.roles.cache.find(
-        role =>
-          role.name.toLowerCase() ===
-          "teknik direktör"
-      );
-
-    const unregistered =
-      interaction.guild.roles.cache.find(
-        role =>
-          role.name.toLowerCase() ===
-          "kayıtsız"
-      );
-
-    const isTD =
-      interaction.customId ===
-      "register_td";
-
-    const selectedRole =
-      isTD
-        ? tdRole
-        : playerRole;
-
-    if (selectedRole) {
-      await interaction.member.roles
-        .add(selectedRole)
-        .catch(() => {});
-    }
-
-    if (unregistered) {
-      await interaction.member.roles
-        .remove(unregistered)
-        .catch(() => {});
-    }
-
-    const player =
-      getPlayer(interaction.user.id);
-
-    player.position =
-      isTD
-        ? "Teknik Direktör"
-        : "Futbolcu";
-
-    save();
-
-    await interaction.reply({
-      content:
-        `✅ Kayıt tamamlandı: **${
-          isTD
-            ? "Teknik Direktör"
-            : "Futbolcu"
-        }**`,
-      ephemeral: true
-    });
-
-    interaction.channel.send({
-      embeds: [
-        makeEmbed(
-          "🎉 Yeni Kayıt",
-          `${interaction.user} **${
-            isTD
-              ? "Teknik Direktör"
-              : "Futbolcu"
-          }** olarak kayıt oldu.
-
-📝 **Kayıt Yetkilisi:** <@&${ROLE.KAYIT}>`
-        )
-      ]
-    }).catch(() => {});
-
-    return;
-  }
-
-  /* ÇEKİLİŞ */
-
-  if (
-    interaction.customId.startsWith(
-      "giveaway:"
-    )
-  ) {
-    const id =
-      interaction.customId.split(":")[1];
-
-    const giveaway =
-      db.giveaways.find(
-        x =>
-          x.id === id &&
-          !x.ended
-      );
-
-    if (!giveaway) {
-      return interaction.reply({
-        content:
-          "❌ Çekiliş bulunamadı.",
-        ephemeral: true
-      });
-    }
-
-    if (
-      !giveaway.entries.includes(
-        interaction.user.id
-      )
-    ) {
-      giveaway.entries.push(
-        interaction.user.id
-      );
-
-      save();
-    }
-
-    return interaction.reply({
-      content:
-        "🎁 Çekilişe katıldın!",
-      ephemeral: true
-    });
-  }
-
-  /* KAP */
-
-  if (
-    interaction.customId.startsWith(
-      "kap:"
-    )
-  ) {
-    const parts =
-      interaction.customId.split(":");
-
-    const id = parts[1];
-    const action = parts[2];
-
-    const kap = db.kap[id];
-
-    if (!kap || kap.done) {
-      return interaction.reply({
-        content:
-          "❌ Bu KAP tamamlanmış.",
-        ephemeral: true
-      });
-    }
-
-    const allowed = [
-      kap.playerId,
-      kap.buyOwner,
-      kap.sellOwner
-    ].filter(Boolean);
-
-    if (
-      !allowed.includes(
-        interaction.user.id
-      )
-    ) {
-      return interaction.reply({
-        content:
-          "❌ Bu KAP için onay yetkin yok.",
-        ephemeral: true
-      });
-    }
-
-    if (action === "reject") {
-      kap.done = true;
-      kap.rejected = true;
-
-      save();
-
-      return interaction.reply(
-        "❌ KAP reddedildi."
-      );
-    }
-
-    if (
-      !kap.approved.includes(
-        interaction.user.id
-      )
-    ) {
-      kap.approved.push(
-        interaction.user.id
-      );
-    }
-
-    if (
-      kap.approved.length >=
-      kap.required
-    ) {
-      const buyer =
-        db.teams[kap.buyTeam];
-
-      const seller =
-        kap.sellTeam
-          ? db.teams[kap.sellTeam]
-          : null;
-
-      const player =
-        getPlayer(kap.playerId);
-
-      ensureTeam(buyer);
-
-      if (seller) {
-        ensureTeam(seller);
-      }
-
-      if (
-        buyer.budget <
-        kap.amount
-      ) {
-        kap.done = true;
-        kap.rejected = true;
-
-        save();
-
-        return interaction.reply(
-          "❌ Alıcı takımın bütçesi yetersiz."
-        );
-      }
-
-      buyer.budget -=
-        kap.amount;
-
-      if (seller) {
-        seller.budget +=
-          kap.amount;
-
-        seller.players =
-          seller.players.filter(
-            id =>
-              id !== kap.playerId
-          );
-      }
-
-      if (
-        !buyer.players.includes(
-          kap.playerId
-        )
-      ) {
-        buyer.players.push(
-          kap.playerId
-        );
-      }
-
-      player.team =
-        buyer.id;
-
-      db.transfers.push({
-        player: kap.playerId,
-        from: seller?.id || null,
-        to: buyer.id,
-        amount: kap.amount,
-        date: Date.now()
-      });
-
-      kap.done = true;
-
-      save();
-
-      return interaction.reply(
-        "✅ Tüm onaylar geldi. Transfer tamamlandı!"
-      );
-    }
-
-    save();
-
-    return interaction.reply(
-      `✅ Onayın kaydedildi. **${kap.approved.length}/${kap.required}**`
+function isValueStaff(member) {
+    return hasRole(
+        member,
+        CONFIG.ROLES.VALUE,
+        "Değer Yetkilisi"
     );
-  }
-
-  /* TICKET BUTTON */
-
-  if (
-    interaction.customId.startsWith(
-      "ticket_close:"
-    )
-  ) {
-    const id =
-      interaction.customId.split(":")[1];
-
-    const ticket =
-      db.tickets[id];
-
-    if (!ticket) {
-      return interaction.reply({
-        content:
-          "❌ Ticket bulunamadı.",
-        ephemeral: true
-      });
-    }
-
-    if (
-      interaction.user.id !==
-        ticket.owner &&
-      !isAdmin(interaction)
-    ) {
-      return interaction.reply({
-        content:
-          "❌ Bu ticketı kapatamazsın.",
-        ephemeral: true
-      });
-    }
-
-    delete db.tickets[id];
-
-    save();
-
-    await interaction.reply(
-      "🔒 Ticket kapatılıyor..."
-    );
-
-    setTimeout(() => {
-      interaction.channel
-        .delete()
-        .catch(() => {});
-    }, 1000);
-  }
-});
-
-/* =========================================================
-   COMMANDS
-   ========================================================= */
-
-client.on("messageCreate", async message => {
-  if (
-    message.author.bot ||
-    !message.guild ||
-    !message.content.startsWith(PREFIX)
-  ) {
-    return;
-  }
-
-  const parts =
-    message.content
-      .slice(PREFIX.length)
-      .trim()
-      .split(/\s+/);
-
-  const command =
-    (parts.shift() || "")
-      .toLowerCase();
-
-  const args = parts;
-
-  const target =
-    message.mentions.members.first();
-
-  try {
-
-    /* =====================================================
-       PING
-       ===================================================== */
-
-    if (command === "ping") {
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🏓 UNITED LEAGUE",
-            `💻 **Bot Gecikmesi:** ${
-              Date.now() -
-              message.createdTimestamp
-            }ms
-
-🌐 **API Gecikmesi:** ${
-              client.ws.ping
-            }ms
-
-⏱️ **Uptime:** ${
-              Math.floor(
-                process.uptime() / 3600
-              )
-            } saat ${
-              Math.floor(
-                (process.uptime() % 3600) /
-                  60
-              )
-            } dakika
-
-🟢 **Bot aktif!**`
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       KAYIT
-       ===================================================== */
-
-    if (
-      command === "kayıt" ||
-      command === "kayit"
-    ) {
-      if (!canRegister(message)) {
-        return message.reply(
-          "❌ Kayıt Yetkilisi gerekli."
-        );
-      }
-
-      const row =
-        new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(
-                "register_player"
-              )
-              .setLabel(
-                "⚽ Futbolcu"
-              )
-              .setStyle(
-                ButtonStyle.Primary
-              ),
-
-            new ButtonBuilder()
-              .setCustomId(
-                "register_td"
-              )
-              .setLabel(
-                "🎩 Teknik Direktör"
-              )
-              .setStyle(
-                ButtonStyle.Success
-              )
-          );
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "📝 UNITED LEAGUE KAYIT",
-            "Kayıt türünü aşağıdaki butonlardan seçin."
-          )
-        ],
-        components: [row]
-      });
-    }
-
-    if (command === "k") {
-      if (!canRegister(message)) {
-        return message.reply(
-          "❌ Kayıt Yetkilisi gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      const row =
-        new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(
-                "register_player"
-              )
-              .setLabel(
-                "⚽ Futbolcu"
-              )
-              .setStyle(
-                ButtonStyle.Primary
-              ),
-
-            new ButtonBuilder()
-              .setCustomId(
-                "register_td"
-              )
-              .setLabel(
-                "🎩 Teknik Direktör"
-              )
-              .setStyle(
-                ButtonStyle.Success
-              )
-          );
-
-      return message.channel.send({
-        content: `${target}`,
-        embeds: [
-          makeEmbed(
-            "📝 Oyuncu Kaydı",
-            "Kayıt türünü seç."
-          )
-        ],
-        components: [row]
-      });
-    }
-
-    /* =====================================================
-       PROFİL
-       ===================================================== */
-
-    if (
-      command === "profil" ||
-      command === "istatistik"
-    ) {
-      const user =
-        target?.user ||
-        message.author;
-
-      const player =
-        getPlayer(user.id);
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            `👤 ${user.username}`,
-            `💰 **Değer:** ${money(player.value)}
-💵 **Bütçe:** ${money(player.budget)}
-⚽ **Maç:** ${player.matches}
-🥅 **Gol:** ${player.goals}
-🎯 **Asist:** ${player.assists}
-🥅 **Penaltı:** ${player.penaltyGoals}/${player.penalties}
-🏋️ **Antrenman:** ${player.training}/10
-⭐ **XP:** ${player.xp}
-🏆 **Kupalar:** ${player.trophies}
-📋 **Pozisyon:** ${player.position}
-🎖️ **Başarılar:** ${
-              player.achievements.join(", ") ||
-              "Yok"
-            }`
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       DEĞER
-       ===================================================== */
-
-    if (command === "dver") {
-      if (!canValue(message)) {
-        return message.reply(
-          "❌ Değer Yetkilisi gerekli."
-        );
-      }
-
-      if (
-        !target ||
-        !args[1]
-      ) {
-        return message.reply(
-          "❌ Kullanım: `.dver @oyuncu 5M`"
-        );
-      }
-
-      const amount =
-        parseMoney(args[1]);
-
-      if (!Number.isFinite(amount)) {
-        return message.reply(
-          "❌ Geçersiz miktar."
-        );
-      }
-
-      const player =
-        getPlayer(target.id);
-
-      player.value += amount;
-
-      await updateValueNickname(
-        target,
-        player.value
-      );
-
-      save();
-
-      await logAction(
-        message.guild,
-        `${target} değerine **${money(amount)}** eklendi.
-Yeni değer: **${money(player.value)}**`
-      );
-
-      return message.reply(
-        `✅ ${target} değerine **${money(amount)}** eklendi.
-💰 Yeni değer: **${money(player.value)}**`
-      );
-    }
-
-    if (
-      command === "değer" ||
-      command === "deger"
-    ) {
-      const user =
-        target?.user ||
-        message.author;
-
-      return message.reply(
-        `💰 ${user} değeri: **${money(
-          getPlayer(user.id).value
-        )}**`
-      );
-    }
-
-    if (
-      command === "değerler" ||
-      command === "degerler"
-    ) {
-      const list =
-        Object.entries(db.players)
-          .sort(
-            (a, b) =>
-              b[1].value -
-              a[1].value
-          )
-          .slice(0, 10)
-          .map(
-            (x, i) =>
-              `${i + 1}. <@${x[0]}> — **${money(
-                x[1].value
-              )}**`
-          )
-          .join("\n") ||
-        "Henüz oyuncu yok.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "💰 DEĞER SIRALAMASI",
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       ANTRENMAN
-       ===================================================== */
-
-    if (
-      command === "ant" ||
-      command === "antrenman"
-    ) {
-      const player =
-        getPlayer(message.author.id);
-
-      player.training++;
-
-      if (player.training >= 10) {
-        player.training = 0;
-
-        player.value +=
-          3000000;
-
-        addXP(
-          message.author.id,
-          50
-        );
-
-        if (
-          !player.achievements.includes(
-            "Antrenman Ustası"
-          )
-        ) {
-          player.achievements.push(
-            "Antrenman Ustası"
-          );
-        }
-
-        await updateValueNickname(
-          message.member,
-          player.value
-        );
-
-        save();
-
-        return message.reply(
-          `🏋️ **10/10 ANRENMAN TAMAMLANDI!**
-
-💰 Otomatik ödül: **+3M€**
-💎 Yeni değer: **${money(
-            player.value
-          )}**`
-        );
-      }
-
-      addXP(
-        message.author.id,
-        10
-      );
-
-      save();
-
-      return message.reply(
-        `🏋️ Antrenman ilerlemen: **${player.training}/10**`
-      );
-    }
-
-    /* =====================================================
-       PENALTI
-       ===================================================== */
-
-    if (
-      command === "pen" ||
-      command === "penaltı" ||
-      command === "penalti"
-    ) {
-      const player =
-        getPlayer(message.author.id);
-
-      player.penalties++;
-
-      const goal =
-        Math.random() < 0.65;
-
-      if (goal) {
-        player.penaltyGoals++;
-
-        player.value +=
-          2000000;
-
-        addXP(
-          message.author.id,
-          30
-        );
-
-        if (
-          player.penaltyGoals >= 5 &&
-          !player.achievements.includes(
-            "Penaltı Uzmanı"
-          )
-        ) {
-          player.achievements.push(
-            "Penaltı Uzmanı"
-          );
-        }
-
-        await updateValueNickname(
-          message.member,
-          player.value
-        );
-
-        save();
-
-        return message.reply(
-          `🥅 **GOOOL!** ⚽
-
-💰 Otomatik ödül: **+2M€**
-💎 Yeni değer: **${money(
-            player.value
-          )}**`
-        );
-      }
-
-      addXP(
-        message.author.id,
-        5
-      );
-
-      save();
-
-      return message.reply(
-        "🥅 ❌ Penaltı kaçtı!"
-      );
-    }
-
-    /* =====================================================
-       OYUNCU BÜTÇESİ
-       ===================================================== */
-
-    if (
-      command === "bütçe" ||
-      command === "butce"
-    ) {
-      const user =
-        target?.user ||
-        message.author;
-
-      return message.reply(
-        `💵 ${user} bütçesi: **${money(
-          getPlayer(user.id).budget
-        )}**`
-      );
-    }
-
-    if (command === "para") {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      const amount =
-        parseMoney(args[1]);
-
-      if (!Number.isFinite(amount)) {
-        return message.reply(
-          "❌ Miktar hatalı."
-        );
-      }
-
-      getPlayer(target.id)
-        .budget += amount;
-
-      save();
-
-      return message.reply(
-        `✅ ${target} bütçesine **${money(
-          amount
-        )}** eklendi.`
-      );
-    }
-
-    if (
-      command === "paragönder" ||
-      command === "paragonder"
-    ) {
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      const amount =
-        parseMoney(args[1]);
-
-      const sender =
-        getPlayer(
-          message.author.id
-        );
-
-      const receiver =
-        getPlayer(target.id);
-
-      if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
-        return message.reply(
-          "❌ Miktar hatalı."
-        );
-      }
-
-      if (
-        sender.budget < amount
-      ) {
-        return message.reply(
-          "❌ Yetersiz bütçe."
-        );
-      }
-
-      sender.budget -= amount;
-      receiver.budget += amount;
-
-      save();
-
-      return message.reply(
-        `✅ **${money(
-          amount
-        )}** gönderildi.`
-      );
-    }
-
-    /* =====================================================
-       TAKIM OLUŞTUR
-       ===================================================== */
-
-    if (
-      command === "takımoluştur" ||
-      command === "takimolustur"
-    ) {
-      if (getTeamByOwner(message.author.id)) {
-        return message.reply(
-          "❌ Zaten bir takımın var."
-        );
-      }
-
-      const name =
-        args.join(" ");
-
-      if (!name) {
-        return message.reply(
-          "❌ Takım adı yaz."
-        );
-      }
-
-      if (getTeamByName(name)) {
-        return message.reply(
-          "❌ Bu takım zaten var."
-        );
-      }
-
-      const role =
-        await message.guild.roles.create({
-          name,
-          color:
-            Math.floor(
-              Math.random() *
-                0xffffff
-            ),
-          hoist: true,
-          reason:
-            "United League takım rolü"
-        }).catch(() => null);
-
-      const tdRole =
-        message.guild.roles.cache.find(
-          r =>
-            r.name.toLowerCase() ===
-            "teknik direktör"
-        );
-
-      if (tdRole) {
-        await message.member.roles
-          .add(tdRole)
-          .catch(() => {});
-      }
-
-      if (role) {
-        await message.member.roles
-          .add(role)
-          .catch(() => {});
-      }
-
-      const id =
-        Date.now().toString();
-
-      db.teams[id] = {
-        id,
-        name,
-        owner:
-          message.author.id,
-        roleId:
-          role?.id || null,
-        budget:
-          100000000,
-        players: [],
-        formation:
-          "4-3-3",
-        positions: {},
-        stats: {
-          played: 0,
-          wins: 0,
-          draws: 0,
-          losses: 0,
-          gf: 0,
-          ga: 0
-        }
-      };
-
-      getPlayer(
-        message.author.id
-      ).team = id;
-
-      save();
-
-      return message.reply(
-        `🏟️ **${name}** oluşturuldu!
-
-🎩 Teknik Direktör: ${message.author}
-💰 Başlangıç bütçesi: **100M€**
-📋 Formasyon: **4-3-3**`
-      );
-    }
-
-    /* =====================================================
-       TAKIM
-       ===================================================== */
-
-    if (
-      command === "takım" ||
-      command === "takim"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (!team) {
-        return message.reply(
-          "❌ Takımın yok."
-        );
-      }
-
-      ensureTeam(team);
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            `🏟️ ${team.name}`,
-            `🎩 **TD:** <@${team.owner}>
-💰 **Bütçe:** ${money(team.budget)}
-📋 **Formasyon:** ${team.formation}
-👥 **Oyuncu:** ${team.players.length}
-⚽ **Maç:** ${team.stats.played}
-🏆 **Galibiyet:** ${team.stats.wins}`
-          )
-        ]
-      });
-    }
-
-    if (
-      command === "takımım" ||
-      command === "takimim"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      return message.reply(
-        team
-          ? `🏟️ Takımın: **${team.name}**`
-          : "❌ Takımın yok."
-      );
-    }
-
-    if (
-      command === "takımlar" ||
-      command === "takimlar"
-    ) {
-      const list =
-        Object.values(db.teams)
-          .map(
-            team =>
-              `🏟️ **${team.name}** — 💰 ${money(
-                team.budget
-              )} — 👥 ${team.players.length}`
-          )
-          .join("\n") ||
-        "Takım yok.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🏟️ TAKIMLAR",
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       TAKIM BÜTÇESİ
-       ===================================================== */
-
-    if (
-      command === "takımbütçe" ||
-      command === "takimbutce"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (!team) {
-        return message.reply(
-          "❌ Takımın yok."
-        );
-      }
-
-      return message.reply(
-        `💰 **${team.name}** takım bütçesi: **${money(
-          team.budget
-        )}**`
-      );
-    }
-
-    if (
-      command === "takımpara" ||
-      command === "takimpara"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (
-        !team ||
-        (
-          team.owner !==
-            message.author.id &&
-          !isAdmin(message)
-        )
-      ) {
-        return message.reply(
-          "❌ Sadece Teknik Direktör kullanabilir."
-        );
-      }
-
-      const amount =
-        parseMoney(args[0]);
-
-      if (!Number.isFinite(amount)) {
-        return message.reply(
-          "❌ Miktar hatalı."
-        );
-      }
-
-      team.budget += amount;
-
-      save();
-
-      return message.reply(
-        `💰 Yeni takım bütçesi: **${money(
-          team.budget
-        )}**`
-      );
-    }
-
-    if (
-      command === "takımharca" ||
-      command === "takimharca"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (
-        !team ||
-        (
-          team.owner !==
-            message.author.id &&
-          !isAdmin(message)
-        )
-      ) {
-        return message.reply(
-          "❌ Sadece Teknik Direktör kullanabilir."
-        );
-      }
-
-      const amount =
-        parseMoney(args[0]);
-
-      if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
-        return message.reply(
-          "❌ Miktar hatalı."
-        );
-      }
-
-      if (
-        team.budget < amount
-      ) {
-        return message.reply(
-          "❌ Takım bütçesi yetersiz."
-        );
-      }
-
-      team.budget -= amount;
-
-      save();
-
-      return message.reply(
-        `💰 Harcama yapıldı.
-Yeni bütçe: **${money(
-          team.budget
-        )}**`
-      );
-    }
-
-    if (
-      command ===
-        "takımbütçegönder" ||
-      command ===
-        "takimbutcegonder"
-    ) {
-      const from =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (!from) {
-        return message.reply(
-          "❌ Takımın yok."
-        );
-      }
-
-      if (
-        from.owner !==
-          message.author.id &&
-        !isAdmin(message)
-      ) {
-        return message.reply(
-          "❌ Sadece Teknik Direktör kullanabilir."
-        );
-      }
-
-      const amount =
-        parseMoney(args.at(-1));
-
-      const role =
-        message.mentions.roles.first();
-
-      let to = null;
-
-      if (role) {
-        to =
-          Object.values(
-            db.teams
-          ).find(
-            team =>
-              team.roleId ===
-              role.id
-          );
-      }
-
-      if (!to) {
-        to =
-          getTeamByName(
-            args
-              .slice(0, -1)
-              .join(" ")
-          );
-      }
-
-      if (!to) {
-        return message.reply(
-          "❌ Alıcı takım bulunamadı."
-        );
-      }
-
-      if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
-        return message.reply(
-          "❌ Miktar hatalı."
-        );
-      }
-
-      if (
-        from.budget < amount
-      ) {
-        return message.reply(
-          "❌ Yetersiz takım bütçesi."
-        );
-      }
-
-      from.budget -= amount;
-      to.budget += amount;
-
-      save();
-
-      return message.reply(
-        `💰 **${from.name} → ${to.name}**
-**${money(amount)}** gönderildi.`
-      );
-    }
-
-    /* =====================================================
-       KADRO
-       ===================================================== */
-
-    if (command === "kadro") {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (!team) {
-        return message.reply(
-          "❌ Takımın yok."
-        );
-      }
-
-      ensureTeam(team);
-
-      if (target) {
-        if (
-          team.owner !==
-            message.author.id &&
-          !isAdmin(message)
-        ) {
-          return message.reply(
-            "❌ Sadece Teknik Direktör kadro yönetebilir."
-          );
-        }
-
-        if (
-          !team.players.includes(
-            target.id
-          )
-        ) {
-          team.players.push(
-            target.id
-          );
-        }
-
-        getPlayer(
-          target.id
-        ).team = team.id;
-
-        save();
-
-        return message.reply(
-          `✅ ${target} **${team.name}** kadrosuna eklendi.`
-        );
-      }
-
-      const positions =
-        team.positions || {};
-
-      const lines =
-        Object.entries(
-          positions
-        )
-          .map(
-            ([position, id]) =>
-              `${position} → ${
-                id
-                  ? `<@${id}>`
-                  : "Boş"
-              }`
-          )
-          .join("\n");
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            `👥 ${team.name} KADRO`,
-            `📋 **Formasyon:** ${team.formation}
-
-${lines || "Kadro henüz oluşturulmadı."}`
-          )
-        ]
-      });
-    }
-
-    if (
-      command ===
-      "kadrocikar"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (
-        !team ||
-        (
-          team.owner !==
-            message.author.id &&
-          !isAdmin(message)
-        )
-      ) {
-        return message.reply(
-          "❌ Teknik Direktör gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      team.players =
-        team.players.filter(
-          id =>
-            id !== target.id
-        );
-
-      for (
-        const position of Object.keys(
-          team.positions || {}
-        )
-      ) {
-        if (
-          team.positions[position] ===
-          target.id
-        ) {
-          team.positions[position] =
-            null;
-        }
-      }
-
-      getPlayer(
-        target.id
-      ).team = null;
-
-      save();
-
-      return message.reply(
-        `✅ ${target} kadrodan çıkarıldı.`
-      );
-    }
-
-    /* =====================================================
-       FORMASYON
-       ===================================================== */
-
-    if (command === "formasyon") {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (!team) {
-        return message.reply(
-          "❌ Takımın yok."
-        );
-      }
-
-      if (!args[0]) {
-        return message.reply(
-          `📋 Mevcut formasyon: **${team.formation}**
-
-Kullanılabilir:
-${Object.keys(FORMATIONS).join(", ")}`
-        );
-      }
-
-      if (!FORMATIONS[args[0]]) {
-        return message.reply(
-          "❌ Geçersiz formasyon."
-        );
-      }
-
-      if (
-        team.owner !==
-          message.author.id &&
-        !isAdmin(message)
-      ) {
-        return message.reply(
-          "❌ Sadece Teknik Direktör değiştirebilir."
-        );
-      }
-
-      team.formation =
-        args[0];
-
-      team.positions = {};
-
-      FORMATIONS[
-        args[0]
-      ].forEach(
-        position => {
-          team.positions[position] =
-            null;
-        }
-      );
-
-      save();
-
-      return message.reply(
-        `✅ Formasyon **${args[0]}** olarak ayarlandı.
-
-📋 Pozisyonlar:
-${FORMATIONS[
-          args[0]
-        ].join(" • ")}`
-      );
-    }
-
-    /* =====================================================
-       POZİSYON
-       ===================================================== */
-
-    if (
-      command === "pozisyon"
-    ) {
-      const team =
-        getTeamByOwner(
-          message.author.id
-        );
-
-      if (
-        !team ||
-        (
-          team.owner !==
-            message.author.id &&
-          !isAdmin(message)
-        )
-      ) {
-        return message.reply(
-          "❌ Teknik Direktör gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      const position =
-        (
-          args[1] || ""
-        ).toUpperCase();
-
-      if (
-        !POSITIONS.includes(
-          position
-        )
-      ) {
-        return message.reply(
-          `❌ Geçersiz pozisyon.
-
-${POSITIONS.join(
-            ", "
-          )}`
-        );
-      }
-
-      if (
-        !team.players.includes(
-          target.id
-        )
-      ) {
-        team.players.push(
-          target.id
-        );
-      }
-
-      team.positions[position] =
-        target.id;
-
-      getPlayer(
-        target.id
-      ).team = team.id;
-
-      getPlayer(
-        target.id
-      ).position =
-        position;
-
-      save();
-
-      return message.reply(
-        `✅ ${target} → **${position}**`
-      );
-    }
-
-    /* =====================================================
-       TRANSFER / KAP
-       ===================================================== */
-
-    if (command === "transfer") {
-      if (!target) {
-        return message.reply(
-          "❌ Kullanım: `.transfer @oyuncu Takım 10M`"
-        );
-      }
-
-      const amount =
-        parseMoney(args.at(-1));
-
-      const buyerName =
-        args
-          .slice(1, -1)
-          .join(" ");
-
-      const buyer =
-        getTeamByName(
-          buyerName
-        );
-
-      const player =
-        getPlayer(target.id);
-
-      const seller =
-        player.team
-          ? db.teams[
-              player.team
-            ]
-          : null;
-
-      if (
-        !buyer ||
-        !Number.isFinite(
-          amount
-        )
-      ) {
-        return message.reply(
-          "❌ Takım veya miktar hatalı."
-        );
-      }
-
-      const kapId =
-        Date.now().toString();
-
-      const required = [
-        target.id,
-        buyer.owner,
-        seller?.owner
-      ].filter(Boolean);
-
-      db.kap[kapId] = {
-        id: kapId,
-        playerId:
-          target.id,
-        buyTeam:
-          buyer.id,
-        sellTeam:
-          seller?.id || null,
-        buyOwner:
-          buyer.owner,
-        sellOwner:
-          seller?.owner || null,
-        amount,
-        approved: [],
-        required:
-          required.length,
-        done: false,
-        rejected: false
-      };
-
-      save();
-
-      const row =
-        new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(
-                `kap:${kapId}:approve`
-              )
-              .setLabel(
-                "✅ Onayla"
-              )
-              .setStyle(
-                ButtonStyle.Success
-              ),
-
-            new ButtonBuilder()
-              .setCustomId(
-                `kap:${kapId}:reject`
-              )
-              .setLabel(
-                "❌ Reddet"
-              )
-              .setStyle(
-                ButtonStyle.Danger
-              )
-          );
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "📑 KAP — TRANSFER",
-            `👤 **Oyuncu:** ${target}
-🏟️ **Alıcı:** ${buyer.name}
-🏟️ **Satıcı:** ${
-              seller?.name ||
-              "Serbest Oyuncu"
-            }
-💰 **Bedel:** ${money(
-              amount
-            )}
-
-### Gerekli Onaylar
-👤 Oyuncu
-🎩 Alıcı Teknik Direktör
-🎩 Satıcı Teknik Direktör
-
-**Tüm gerekli kişiler kabul etmeden transfer gerçekleşmez.**`
-          )
-        ],
-        components: [row]
-      });
-    }
-
-    if (
-      command ===
-        "transferler" ||
-      command ===
-        "transfergeçmişi" ||
-      command ===
-        "transfergecmisi"
-    ) {
-      const list =
-        db.transfers
-          .slice(-20)
-          .reverse()
-          .map(
-            transfer =>
-              `🔄 <@${transfer.player}> → **${
-                db.teams[
-                  transfer.to
-                ]?.name ||
-                "Takım"
-              }** — ${money(
-                transfer.amount
-              )}`
-          )
-          .join("\n") ||
-        "Transfer yok.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🔄 TRANSFERLER",
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       MAÇ
-       ===================================================== */
-
-    if (
-      command === "maç" ||
-      command === "mac"
-    ) {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Maç Yetkilisi/Yönetici gerekli."
-        );
-      }
-
-      const roles =
-        [...message.mentions.roles.values()];
-
-      let team1 =
-        roles[0]
-          ? Object.values(
-              db.teams
-            ).find(
-              team =>
-                team.roleId ===
-                roles[0].id
-            )
-          : null;
-
-      let team2 =
-        roles[1]
-          ? Object.values(
-              db.teams
-            ).find(
-              team =>
-                team.roleId ===
-                roles[1].id
-            )
-          : null;
-
-      if (!team1) {
-        team1 =
-          getTeamByName(
-            args[0]
-          );
-      }
-
-      if (!team2) {
-        team2 =
-          getTeamByName(
-            args[1]
-          );
-      }
-
-      if (
-        !team1 ||
-        !team2 ||
-        team1.id ===
-          team2.id
-      ) {
-        return message.reply(
-          "❌ Kullanım: `.maç @takım1 @takım2`"
-        );
-      }
-
-      ensureTeam(team1);
-      ensureTeam(team2);
-
-      await message.channel.send({
-        embeds: [
-          makeEmbed(
-            "⚽ MAÇ BAŞLADI",
-            `🏟️ **${team1.name}** vs **${team2.name}**
-
-📋 ${team1.formation} — ${team2.formation}
-
-⏱️ Maç simülasyonu başladı...`
-          )
-        ]
-      });
-
-      let goals1 = 0;
-      let goals2 = 0;
-
-      const events = [
-        "Orta saha mücadelesi hızlandı.",
-        "Tehlikeli atak gelişiyor!",
-        "Kaleci gole izin vermedi.",
-        "Savunma araya girdi.",
-        "Şut! Top auta çıktı.",
-        "Hızlı hücum başladı.",
-        "Kanattan tehlikeli orta geldi.",
-        "Defans topu uzaklaştırdı."
-      ];
-
-      /*
-        5 dakikalık istenen sistemin
-        test edilebilir hızlı simülasyonu.
-      */
-
-      for (
-        let minute = 1;
-        minute <= 5;
-        minute++
-      ) {
-        await new Promise(
-          resolve =>
-            setTimeout(
-              resolve,
-              1000
-            )
-        );
-
-        if (
-          Math.random() <
-          0.55
-        ) {
-          if (
-            Math.random() <
-            0.5
-          ) {
-            goals1++;
-
-            await message.channel.send(
-              `⚽ **GOOOL!** ${team1.name} gol buldu!
-
-📊 **${goals1}-${goals2}**`
-            );
-          } else {
-            goals2++;
-
-            await message.channel.send(
-              `⚽ **GOOOL!** ${team2.name} gol buldu!
-
-📊 **${goals1}-${goals2}**`
-            );
-          }
-        } else {
-          await message.channel.send(
-            `⏱️ **${minute}. dakika** — ${
-              events[
-                Math.floor(
-                  Math.random() *
-                    events.length
-                )
-              ]
-            }`
-          );
-        }
-      }
-
-      team1.stats.played++;
-      team2.stats.played++;
-
-      team1.stats.gf +=
-        goals1;
-      team1.stats.ga +=
-        goals2;
-
-      team2.stats.gf +=
-        goals2;
-      team2.stats.ga +=
-        goals1;
-
-      if (
-        goals1 > goals2
-      ) {
-        team1.stats.wins++;
-        team2.stats.losses++;
-      } else if (
-        goals2 > goals1
-      ) {
-        team2.stats.wins++;
-        team1.stats.losses++;
-      } else {
-        team1.stats.draws++;
-        team2.stats.draws++;
-      }
-
-      for (
-        const playerId of
-          team1.players
-      ) {
-        const p =
-          getPlayer(
-            playerId
-          );
-
-        p.matches++;
-        addXP(
-          playerId,
-          20
-        );
-      }
-
-      for (
-        const playerId of
-          team2.players
-      ) {
-        const p =
-          getPlayer(
-            playerId
-          );
-
-        p.matches++;
-        addXP(
-          playerId,
-          20
-        );
-      }
-
-      db.matches.push({
-        team1:
-          team1.id,
-        team2:
-          team2.id,
-        goals1,
-        goals2,
-        date:
-          Date.now()
-      });
-
-      save();
-
-      return message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🏁 MAÇ BİTTİ",
-            `🏟️ **${team1.name} ${goals1} - ${goals2} ${team2.name}**
-
-📊 Sonuç lige kaydedildi.
-🏆 Puan durumu güncellendi.`
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       MAÇLAR
-       ===================================================== */
-
-    if (
-      command ===
-        "maçlar" ||
-      command ===
-        "maclar"
-    ) {
-      const list =
-        db.matches
-          .slice(-15)
-          .reverse()
-          .map(
-            match =>
-              `⚽ **${
-                db.teams[
-                  match.team1
-                ]?.name ||
-                "?"
-              } ${match.goals1}-${match.goals2} ${
-                db.teams[
-                  match.team2
-                ]?.name ||
-                "?"
-              }**`
-          )
-          .join("\n") ||
-        "Maç yok.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "⚽ SON MAÇLAR",
-            list
-          )
-        ]
-      });
-    }
-
-    if (
-      command ===
-        "maçsonucu" ||
-      command ===
-        "macsonucu"
-    ) {
-      const match =
-        db.matches.at(-1);
-
-      if (!match) {
-        return message.reply(
-          "❌ Maç yok."
-        );
-      }
-
-      return message.reply(
-        `⚽ **${
-          db.teams[
-            match.team1
-          ]?.name
-        } ${match.goals1}-${match.goals2} ${
-          db.teams[
-            match.team2
-          ]?.name
-        }**`
-      );
-    }
-
-    /* =====================================================
-       LİG / PUAN
-       ===================================================== */
-
-    if (
-      command === "lig" ||
-      command === "puan"
-    ) {
-      const list =
-        Object.values(db.teams)
-          .sort((a, b) => {
-            const pointsA =
-              a.stats.wins * 3 +
-              a.stats.draws;
-
-            const pointsB =
-              b.stats.wins * 3 +
-              b.stats.draws;
-
-            const avA =
-              a.stats.gf -
-              a.stats.ga;
-
-            const avB =
-              b.stats.gf -
-              b.stats.ga;
-
-            return (
-              pointsB -
-                pointsA ||
-              avB - avA
-            );
-          })
-          .map(
-            (team, index) => {
-              const points =
-                team.stats.wins *
-                  3 +
-                team.stats.draws;
-
-              return `${index + 1}. **${team.name}** — **${points} P**
-G: ${team.stats.wins} | B: ${team.stats.draws} | M: ${team.stats.losses}
-⚽ ${team.stats.gf} | 🥅 ${team.stats.ga} | AV: ${
-                team.stats.gf -
-                team.stats.ga
-              }`;
-            }
-          )
-          .join("\n\n") ||
-        "Lig boş.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            `🏆 UNITED LEAGUE — SEZON ${db.season}`,
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       GOL KRALLIĞI
-       ===================================================== */
-
-    if (
-      command ===
-        "golkrallığı" ||
-      command ===
-        "golkralligi"
-    ) {
-      const list =
-        Object.entries(
-          db.players
-        )
-          .sort(
-            (a, b) =>
-              b[1].goals -
-              a[1].goals
-          )
-          .slice(0, 10)
-          .map(
-            (x, i) =>
-              `${i + 1}. <@${x[0]}> — **${x[1].goals} gol**`
-          )
-          .join("\n") ||
-        "Gol yok.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🥅 GOL KRALLIĞI",
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       ASİST KRALLIĞI
-       ===================================================== */
-
-    if (
-      command ===
-        "asistkrallığı" ||
-      command ===
-        "asistkralligi"
-    ) {
-      const list =
-        Object.entries(
-          db.players
-        )
-          .sort(
-            (a, b) =>
-              b[1].assists -
-              a[1].assists
-          )
-          .slice(0, 10)
-          .map(
-            (x, i) =>
-              `${i + 1}. <@${x[0]}> — **${x[1].assists} asist**`
-          )
-          .join("\n") ||
-        "Asist yok.";
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🎯 ASİST KRALLIĞI",
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       SEZON
-       ===================================================== */
-
-    if (
-      command === "sezon"
-    ) {
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "📅 SEZON",
-            `🏆 **Sezon:** ${db.season}
-🏟️ **Takımlar:** ${
-              Object.keys(
-                db.teams
-              ).length
-            }
-⚽ **Maçlar:** ${
-              db.matches.length
-            }`
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       TICKET
-       ===================================================== */
-
-    if (
-      command === "ticket"
-    ) {
-      const channel =
-        await message.guild.channels.create(
-          {
-            name:
-              `ticket-${message.author.username}`
-                .toLowerCase()
-                .replace(
-                  /[^a-z0-9-]/g,
-                  ""
-                )
-                .slice(0, 80),
-
-            type:
-              ChannelType.GuildText,
-
-            permissionOverwrites: [
-              {
-                id:
-                  message.guild.id,
-
-                deny: [
-                  PermissionsBitField.Flags
-                    .ViewChannel
-                ]
-              },
-
-              {
-                id:
-                  message.author.id,
-
-                allow: [
-                  PermissionsBitField.Flags
-                    .ViewChannel,
-
-                  PermissionsBitField.Flags
-                    .SendMessages
-                ]
-              }
-            ]
-          }
-        ).catch(() => null);
-
-      if (!channel) {
-        return message.reply(
-          "❌ Ticket açılamadı."
-        );
-      }
-
-      db.tickets[
-        channel.id
-      ] = {
-        owner:
-          message.author.id,
-        created:
-          Date.now()
-      };
-
-      save();
-
-      const row =
-        new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(
-                `ticket_close:${channel.id}`
-              )
-              .setLabel(
-                "🔒 Ticket Kapat"
-              )
-              .setStyle(
-                ButtonStyle.Danger
-              )
-          );
-
-      await channel.send({
-        embeds: [
-          makeEmbed(
-            "🎫 UNITED LEAGUE TICKET",
-            `👤 **Yetkili:** ${
-              message.author
-            }
-
-Yetkililer kısa süre içerisinde ilgilenecektir.`
-          )
-        ],
-        components: [row]
-      });
-
-      return message.reply(
-        `🎫 Ticket açıldı: ${channel}`
-      );
-    }
-
-    if (
-      command ===
-      "ticketkapat"
-    ) {
-      if (
-        !db.tickets[
-          message.channel.id
-        ] &&
-        !isAdmin(message)
-      ) {
-        return message.reply(
-          "❌ Bu kanal ticket değil."
-        );
-      }
-
-      delete db.tickets[
-        message.channel.id
-      ];
-
-      save();
-
-      await message.reply(
-        "🔒 Ticket kapatılıyor..."
-      );
-
-      return message.channel
-        .delete()
-        .catch(() => {});
-    }
-
-    /* =====================================================
-       KICK
-       ===================================================== */
-
-    if (command === "kick") {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      await target
-        .kick(
-          args
-            .slice(1)
-            .join(" ") ||
-            "United League"
-        )
-        .catch(() => {});
-
-      return message.reply(
-        `👢 ${target} sunucudan atıldı.`
-      );
-    }
-
-    /* =====================================================
-       BAN
-       ===================================================== */
-
-    if (command === "ban") {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      await target
-        .ban({
-          reason:
-            args
-              .slice(1)
-              .join(" ") ||
-            "United League"
-        })
-        .catch(() => {});
-
-      return message.reply(
-        `🔨 ${target} banlandı.`
-      );
-    }
-
-    /* =====================================================
-       MUTE
-       ===================================================== */
-
-    if (command === "mute") {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      let muteRole =
-        message.guild.roles.cache.find(
-          role =>
-            role.name.toLowerCase() ===
-            "mute"
-        );
-
-      if (!muteRole) {
-        muteRole =
-          await message.guild.roles.create(
-            {
-              name: "Mute",
-              color: 0x808080
-            }
-          ).catch(() => null);
-      }
-
-      if (muteRole) {
-        await target.roles
-          .add(muteRole)
-          .catch(() => {});
-      }
-
-      return message.reply(
-        `🔇 ${target} susturuldu.`
-      );
-    }
-
-    /* =====================================================
-       UNMUTE
-       ===================================================== */
-
-    if (
-      command ===
-      "unmute"
-    ) {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
-
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      const muteRole =
-        message.guild.roles.cache.find(
-          role =>
-            role.name.toLowerCase() ===
-            "mute"
-        );
-
-      if (muteRole) {
-        await target.roles
-          .remove(muteRole)
-          .catch(() => {});
-      }
-
-      return message.reply(
-        `🔊 ${target} susturması kaldırıldı.`
-      );
-    }
-
-    /* =====================================================
-       MESAJ SİL
-       ===================================================== */
-
-    if (command === "sil") {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
-
-      let amount =
-        parseInt(args[0]);
-
-      if (
-        !Number.isFinite(
-          amount
-        ) ||
-        amount < 1
-      ) {
-        return message.reply(
-          "❌ Geçerli miktar yaz."
-        );
-      }
-
-      amount =
-        Math.min(
-          amount,
-          1000
-        );
-
-      let deleted = 0;
-
-      for (
-        let i = 0;
-        i < 10 &&
-        deleted < amount;
-        i++
-      ) {
-        const batch =
-          await message.channel
-            .bulkDelete(
-              Math.min(
-                100,
-                amount -
-                  deleted
-              ),
-              true
-            )
-            .catch(
-              () => null
-            );
-
-        if (
-          !batch ||
-          batch.size === 0
-        ) {
-          break;
-        }
-
-        deleted +=
-          batch.size;
-
-        if (
-          batch.size < 100
-        ) {
-          break;
-        }
-      }
-
-      return message.channel
-        .send(
-          `🗑️ **${deleted}** mesaj silindi.`
-        )
-        .then(msg => {
-          setTimeout(
-            () =>
-              msg
-                .delete()
-                .catch(
-                  () => {}
-                ),
-            3000
-          );
+}
+
+function isMatchStaff(member) {
+    return hasRole(member, null, "Maç Yetkilisi");
+}
+
+function isGiveawayStaff(member) {
+    return hasRole(member, null, "Çekiliş Yetkilisi");
+}
+
+function isMediaStaff(member) {
+    return hasRole(member, null, "Medya Yetkilisi");
+}
+
+function isDMStaff(member) {
+    return hasRole(member, null, "DM/SM Yetkilisi");
+}
+
+function isChannelStaff(member) {
+    return hasRole(member, null, "Kanal Yetkilisi");
+}
+
+function isKickStaff(member) {
+    return hasRole(member, null, "Kick Yetkilisi");
+}
+
+function isBanStaff(member) {
+    return hasRole(member, null, "Ban Yetkilisi");
+}
+
+function isMuteStaff(member) {
+    return hasRole(member, null, "Mute Yetkilisi");
+}
+
+async function getOrCreateRole(
+    guild,
+    name,
+    color = "#5865F2",
+    hoist = true
+) {
+    let role = guild.roles.cache.find(r => r.name === name);
+
+    if (!role) {
+        role = await guild.roles.create({
+            name,
+            color,
+            hoist,
+            reason: "United League otomatik rol sistemi"
         });
     }
 
-    /* =====================================================
-       KİLİT
-       ===================================================== */
+    return role;
+}
 
-    if (
-      command ===
-      "kilitle"
-    ) {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
+async function ensureMainRoles(guild) {
+    await getOrCreateRole(guild, "Kayıtsız", "#747F8D", true);
+    await getOrCreateRole(guild, "Futbolcu", "#57F287", true);
+    await getOrCreateRole(guild, "Teknik Direktör", "#5865F2", true);
+}
 
-      await message.channel
-        .permissionOverwrites
-        .edit(
-          message.guild.roles.everyone,
-          {
-            SendMessages:
-              false
-          }
-        )
-        .catch(() => {});
+function getPlayerMember(guild, userId) {
+    return guild.members.cache.get(userId);
+}
 
-      return message.reply(
-        "🔒 Kanal kilitlendi."
-      );
+/* =========================
+   SADECE DEĞER KISMI
+   DEĞİŞTİRİLİR
+========================= */
+
+async function updatePlayerValueNickname(member, newValue) {
+    if (!member) return false;
+
+    const oldNickname = member.nickname || member.user.username;
+
+    let parts = oldNickname
+        .split("|")
+        .map(x => x.trim());
+
+    const valueText = formatMoney(newValue);
+
+    if (parts.length >= 2) {
+        const last = parts[parts.length - 1];
+
+        if (/^[\d.,]+\s*[KMB]?\s*€?$/i.test(last)) {
+            parts[parts.length - 1] = valueText;
+        } else {
+            parts.push(valueText);
+        }
+    } else {
+        parts.push(valueText);
     }
 
-    if (
-      command ===
-        "kilitaç" ||
-      command ===
-        "kilitac"
-    ) {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
-        );
-      }
+    let newNickname = parts.join(" | ");
 
-      await message.channel
-        .permissionOverwrites
-        .edit(
-          message.guild.roles.everyone,
-          {
-            SendMessages:
-              null
-          }
-        )
-        .catch(() => {});
+    if (newNickname.length > 32) {
+        const value = valueText;
+        const prefix = parts.slice(0, -1).join(" | ");
 
-      return message.reply(
-        "🔓 Kanal açıldı."
-      );
+        newNickname =
+            prefix.slice(0, Math.max(1, 32 - value.length - 3)) +
+            " | " +
+            value;
     }
 
-    /* =====================================================
-       ÇEKİLİŞ
-       ===================================================== */
+    try {
+        await member.setNickname(newNickname);
+        return true;
+    } catch (err) {
+        console.error("Nickname değiştirilemedi:", err.message);
+        return false;
+    }
+}
 
-    if (
-      command ===
-        "çekiliş" ||
-      command ===
-        "cekilis"
-    ) {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Çekiliş Yetkilisi/Yönetici gerekli."
-        );
-      }
+/* =========================
+   XP / BAŞARIM
+========================= */
 
-      if (
-        !args[0] ||
-        !args[1]
-      ) {
-        return message.reply(
-          "❌ Örnek: `.çekiliş 5M€ 5sa`"
-        );
-      }
+function addXP(userId, amount) {
+    const player = getPlayer(userId);
 
-      const duration =
-        parseDuration(
-          args[1]
-        );
+    player.xp += amount;
 
-      if (
-        !Number.isFinite(
-          duration
+    const newLevel = Math.floor(player.xp / 1000) + 1;
+
+    if (newLevel > player.level) {
+        player.level = newLevel;
+    }
+}
+
+function awardAchievement(userId, achievement) {
+    const player = getPlayer(userId);
+
+    if (!player.achievements.includes(achievement)) {
+        player.achievements.push(achievement);
+        addXP(userId, 250);
+        return true;
+    }
+
+    return false;
+}
+
+/* =========================
+   LOG
+========================= */
+
+async function logAction(guild, title, description) {
+    try {
+        const channel =
+            guild.channels.cache.find(c =>
+                c.isTextBased() &&
+                [
+                    "bot-log",
+                    "bot-logs",
+                    "logs",
+                    "kayıt-log",
+                    "log"
+                ].includes(c.name.toLowerCase())
+            );
+
+        if (!channel) return;
+
+        const embed = new EmbedBuilder()
+            .setColor("#5865F2")
+            .setTitle(`United League • ${title}`)
+            .setDescription(description)
+            .setTimestamp();
+
+        await channel.send({ embeds: [embed] });
+    } catch {}
+}
+
+/* =========================
+   KAYIT
+========================= */
+
+async function sendRegistrationMessage(message) {
+    const embed = new EmbedBuilder()
+        .setColor("#5865F2")
+        .setTitle("🇹🇷 United League • Kayıt")
+        .setDescription(
+            "United League'e hoş geldin!\n\n" +
+            "Aşağıdaki butonlardan sunucudaki rolünü seçebilirsin.\n\n" +
+            "⚽ **Futbolcu**\n" +
+            "🎩 **Teknik Direktör**"
         )
-      ) {
-        return message.reply(
-          "❌ Süre: `30sn`, `5dk`, `2sa` şeklinde olmalı."
-        );
-      }
+        .setFooter({
+            text: "United League • Kayıt Sistemi"
+        })
+        .setTimestamp();
 
-      const id =
-        Date.now().toString();
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId("register_player")
+            .setLabel("Futbolcu")
+            .setEmoji("⚽")
+            .setStyle(ButtonStyle.Success),
 
-      const giveaway = {
-        id,
-        prize:
-          args[0],
-        duration,
-        channelId:
-          message.channel.id,
-        entries: [],
-        ended: false,
-        endAt:
-          Date.now() +
-          duration
-      };
+        new ButtonBuilder()
+            .setCustomId("register_td")
+            .setLabel("Teknik Direktör")
+            .setEmoji("🎩")
+            .setStyle(ButtonStyle.Primary)
+    );
 
-      db.giveaways.push(
-        giveaway
-      );
-
-      save();
-
-      const row =
-        new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(
-                `giveaway:${id}`
-              )
-              .setLabel(
-                "🎁 Katıl"
-              )
-              .setStyle(
-                ButtonStyle.Success
-              )
-          );
-
-      await message.channel.send({
-        embeds: [
-          makeEmbed(
-            "🎁 ÇEKİLİŞ BAŞLADI",
-            `💰 **Ödül:** ${
-              args[0]
-            }
-
-⏱️ **Süre:** ${
-              args[1]
-            }
-
-👥 **Katılımcı:** 0`
-          )
-        ],
+    await message.channel.send({
+        embeds: [embed],
         components: [row]
-      });
+    });
+}
 
-      setTimeout(
-        async () => {
-          if (
-            giveaway.ended
-          ) {
-            return;
-          }
+/* =========================
+   TAKIM
+========================= */
 
-          giveaway.ended =
-            true;
+async function createTeam(guild, ownerId, teamName) {
+    const already = Object.values(data.teams)
+        .find(t => t.ownerId === ownerId);
 
-          const winner =
-            giveaway.entries[
-              Math.floor(
-                Math.random() *
-                  giveaway.entries
-                    .length
-              )
-            ];
-
-          if (winner) {
-            message.channel.send({
-              embeds: [
-                makeEmbed(
-                  "🎉 ÇEKİLİŞ BİTTİ",
-                  `💰 **Ödül:** ${
-                    giveaway.prize
-                  }
-
-🏆 **Kazanan:** <@${winner}>`
-                )
-              ]
-            }).catch(() => {});
-          } else {
-            message.channel.send(
-              "🎁 Çekiliş bitti ancak katılımcı yoktu."
-            ).catch(() => {});
-          }
-
-          save();
-        },
-        duration
-      );
-
-      return;
+    if (already) {
+        return {
+            error: `Zaten **${already.name}** takımına sahipsin.`
+        };
     }
 
-    /* =====================================================
-       YENİ KAZANAN
-       ===================================================== */
-
-    if (
-      command ===
-      "yenikazanan"
-    ) {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ Yönetici gerekli."
+    const exists = Object.values(data.teams)
+        .find(t =>
+            t.name.toLowerCase() === teamName.toLowerCase()
         );
-      }
 
-      const giveaway =
-        [...db.giveaways]
-          .reverse()
-          .find(
-            x =>
-              x.ended &&
-              x.entries.length
-          );
-
-      if (!giveaway) {
-        return message.reply(
-          "❌ Uygun çekiliş yok."
-        );
-      }
-
-      const winner =
-        giveaway.entries[
-          Math.floor(
-            Math.random() *
-              giveaway.entries
-                .length
-          )
-        ];
-
-      return message.reply(
-        `🎉 Yeni kazanan: <@${winner}>`
-      );
+    if (exists) {
+        return {
+            error: "Bu takım zaten sistemde bulunuyor."
+        };
     }
 
-    /* =====================================================
-       TWEET / HABER
-       ===================================================== */
+    const role = await guild.roles.create({
+        name: teamName,
+        color: randomColor(),
+        hoist: true,
+        reason: "United League takım sistemi"
+    });
 
-    if (
-      command === "tweet" ||
-      command === "haber"
-    ) {
-      const text =
-        args.join(" ");
+    const id = `${Date.now()}_${ownerId}`;
 
-      const attachment =
-        message.attachments.first();
+    data.teams[id] = {
+        id,
+        name: teamName,
+        ownerId,
+        roleId: role.id,
+        budget: CONFIG.START_TEAM_BUDGET,
+        squad: [],
+        formation: "4-3-3",
+        company: null,
+        sponsor: null,
+        stats: {
+            played: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+            gf: 0,
+            ga: 0,
+            points: 0
+        }
+    };
 
-      if (
-        !text &&
-        !attachment
-      ) {
+    await guild.members.cache.get(ownerId)?.roles.add(role);
+
+    saveData();
+
+    return {
+        team: data.teams[id]
+    };
+}
+
+function getUserTeam(userId) {
+    return Object.values(data.teams)
+        .find(t => t.ownerId === userId);
+}
+
+function getTeamByMention(message, mention) {
+    if (!mention) return null;
+
+    const id = mention.replace(/[<@&>]/g, "");
+
+    return getTeam(id);
+}
+
+/* =========================
+   FORMASYON
+========================= */
+
+const FORMATIONS = [
+    "4-3-3",
+    "4-2-3-1",
+    "4-4-2",
+    "3-5-2",
+    "3-4-3",
+    "5-3-2",
+    "5-4-1",
+    "4-1-4-1",
+    "4-3-2-1",
+    "4-2-2-2",
+    "3-4-1-2"
+];
+
+/* =========================
+   KAP / TRANSFER
+========================= */
+
+async function createKAP(
+    message,
+    playerId,
+    buyerTeam,
+    amount
+) {
+    const player = getPlayer(playerId);
+
+    const sellerTeam = player.teamId
+        ? getTeam(player.teamId)
+        : null;
+
+    if (!buyerTeam) {
+        return message.reply("❌ Alıcı takım bulunamadı.");
+    }
+
+    if (sellerTeam && sellerTeam.id === buyerTeam.id) {
+        return message.reply("❌ Oyuncu zaten bu takımda.");
+    }
+
+    if (buyerTeam.budget < amount) {
         return message.reply(
-          "❌ Mesaj veya görsel ekle."
+            `❌ Takım bütçesi yetersiz. Mevcut bütçe: **${formatMoney(buyerTeam.budget)}**`
         );
-      }
+    }
 
-      const e =
-        makeEmbed(
-          command ===
-            "tweet"
-            ? "🐦 UNITED LEAGUE TWEET"
-            : "📰 UNITED LEAGUE HABER",
-          text ||
-            "Yeni medya paylaşımı."
-        );
+    const kapId = `KAP-${Date.now()}`;
 
-      if (
-        attachment &&
-        attachment.contentType?.startsWith(
-          "image/"
+    data.transfers.push({
+        id: kapId,
+        playerId,
+        buyerTeamId: buyerTeam.id,
+        sellerTeamId: sellerTeam?.id || null,
+        amount,
+        playerApproved: false,
+        buyerApproved: false,
+        sellerApproved: sellerTeam ? false : true,
+        status: "pending",
+        createdAt: Date.now()
+    });
+
+    saveData();
+
+    const embed = new EmbedBuilder()
+        .setColor("#FEE75C")
+        .setTitle("📄 United League • KAP")
+        .setDescription(
+            `**Oyuncu:** <@${playerId}>\n` +
+            `**Alıcı:** ${buyerTeam.name}\n` +
+            `**Satıcı:** ${sellerTeam ? sellerTeam.name : "Serbest Oyuncu"}\n` +
+            `**Bonservis:** ${formatMoney(amount)}\n\n` +
+            `Transferin tamamlanması için gerekli onaylar alınmalıdır.`
         )
-      ) {
-        e.setImage(
-          attachment.url
-        );
-      }
+        .addFields(
+            {
+                name: "Oyuncu",
+                value: "⏳ Bekliyor",
+                inline: true
+            },
+            {
+                name: "Alıcı TD",
+                value: "⏳ Bekliyor",
+                inline: true
+            },
+            {
+                name: "Satıcı TD",
+                value: sellerTeam ? "⏳ Bekliyor" : "✅ Gerekli değil",
+                inline: true
+            }
+        )
+        .setFooter({
+            text: `KAP ID: ${kapId}`
+        })
+        .setTimestamp();
 
-      return message.channel.send({
-        embeds: [e]
-      });
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`kap_player_${kapId}`)
+            .setLabel("Oyuncu Onayı")
+            .setStyle(ButtonStyle.Success),
+
+        new ButtonBuilder()
+            .setCustomId(`kap_buyer_${kapId}`)
+            .setLabel("Alıcı TD")
+            .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder()
+            .setCustomId(`kap_seller_${kapId}`)
+            .setLabel("Satıcı TD")
+            .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+            .setCustomId(`kap_reject_${kapId}`)
+            .setLabel("Reddet")
+            .setStyle(ButtonStyle.Danger)
+    );
+
+    await message.channel.send({
+        embeds: [embed],
+        components: [row]
+    });
+
+    return null;
+}
+
+async function completeKAP(kap, guild) {
+    const player = getPlayer(kap.playerId);
+
+    const buyer = getTeam(kap.buyerTeamId);
+    const seller = kap.sellerTeamId
+        ? getTeam(kap.sellerTeamId)
+        : null;
+
+    if (!buyer) return false;
+
+    if (buyer.budget < kap.amount) {
+        return false;
     }
 
-    /* =====================================================
-       DM
-       ===================================================== */
-
-    if (command === "dm") {
-      if (!isAdmin(message)) {
-        return message.reply(
-          "❌ DM/SM Yetkilisi veya Yönetici gerekli."
+    if (seller) {
+        seller.squad = seller.squad.filter(
+            id => id !== kap.playerId
         );
-      }
 
-      const destination =
-        args.shift();
+        seller.budget += kap.amount;
+    }
 
-      const text =
-        args.join(" ");
+    buyer.budget -= kap.amount;
 
-      if (
-        !destination ||
-        !text
-      ) {
-        return message.reply(
-          "❌ Kullanım: `.dm all Mesaj` veya `.dm @oyuncu Mesaj`"
+    if (!buyer.squad.includes(kap.playerId)) {
+        buyer.squad.push(kap.playerId);
+    }
+
+    player.teamId = buyer.id;
+
+    kap.status = "completed";
+    kap.completedAt = Date.now();
+
+    addXP(kap.playerId, 500);
+
+    saveData();
+
+    await logAction(
+        guild,
+        "Transfer",
+        `<@${kap.playerId}> → **${buyer.name}**\n` +
+        `Bonservis: **${formatMoney(kap.amount)}**`
+    );
+
+    return true;
+}
+
+/* =========================
+   MAÇ
+========================= */
+
+const MATCH_EVENTS = [
+    "orta saha mücadelesi",
+    "kanattan hızlı bir atak",
+    "savunmada kritik müdahale",
+    "tehlikeli bir korner",
+    "uzaktan şut",
+    "kalecinin başarılı kurtarışı",
+    "hızlı kontra atak",
+    "ceza sahasına gönderilen tehlikeli orta",
+    "orta sahada top kapma",
+    "savunmanın çizgi halinde yaptığı müdahale",
+    "hücum oyuncusunun rakibini geçmesi",
+    "teknik bir paslaşma",
+    "tehlikeli serbest vuruş",
+    "rakip savunmanın topu uzaklaştırması"
+];
+
+async function startMatch(message, team1, team2) {
+    if (team1.id === team2.id) {
+        return message.reply("❌ Aynı takım kendisiyle maç yapamaz.");
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor("#5865F2")
+        .setTitle("⚽ United League • Maç Başladı")
+        .setDescription(
+            `🏟️ **${team1.name}** vs **${team2.name}**\n\n` +
+            `⏱️ Maç süresi: **5 dakika**\n` +
+            `🔢 Skor: **0 - 0**\n\n` +
+            `Maç başlıyor...`
+        )
+        .setTimestamp();
+
+    const sent = await message.channel.send({
+        embeds: [embed]
+    });
+
+    const state = {
+        score1: 0,
+        score2: 0,
+        seconds: 0,
+        lastEvents: [],
+        scorers1: [],
+        scorers2: []
+    };
+
+    const match = {
+        id: `MATCH-${Date.now()}`,
+        team1: team1.id,
+        team2: team2.id,
+        score1: 0,
+        score2: 0,
+        status: "live",
+        startedAt: Date.now()
+    };
+
+    data.matches.push(match);
+    saveData();
+
+    const interval = setInterval(async () => {
+        try {
+            state.seconds++;
+
+            const attackingTeam =
+                Math.random() < 0.5 ? team1 : team2;
+
+            let event =
+                MATCH_EVENTS[
+                    Math.floor(
+                        Math.random() * MATCH_EVENTS.length
+                    )
+                ];
+
+            let tries = 0;
+
+            while (
+                state.lastEvents.includes(event) &&
+                tries < 10
+            ) {
+                event =
+                    MATCH_EVENTS[
+                        Math.floor(
+                            Math.random() * MATCH_EVENTS.length
+                        )
+                    ];
+
+                tries++;
+            }
+
+            state.lastEvents.push(event);
+
+            if (state.lastEvents.length > 5) {
+                state.lastEvents.shift();
+            }
+
+            let goal = false;
+
+            if (Math.random() < 0.012) {
+                goal = true;
+
+                if (attackingTeam.id === team1.id) {
+                    state.score1++;
+                } else {
+                    state.score2++;
+                }
+
+                const scorerId =
+                    attackingTeam.squad.length
+                        ? attackingTeam.squad[
+                              Math.floor(
+                                  Math.random() *
+                                      attackingTeam.squad.length
+                              )
+                          ]
+                        : attackingTeam.ownerId;
+
+                const scorer = getPlayer(scorerId);
+
+                scorer.goals++;
+                scorer.matches++;
+
+                addXP(scorerId, 200);
+                awardAchievement(scorerId, "İlk Gol");
+
+                if (attackingTeam.id === team1.id) {
+                    state.scorers1.push(scorerId);
+                } else {
+                    state.scorers2.push(scorerId);
+                }
+
+                event = `⚽ **GOOOL!** ${attackingTeam.name} golü buldu! <@${scorerId}> ağları havalandırdı!`;
+            }
+
+            if (Math.random() < 0.018) {
+                const assisterId =
+                    attackingTeam.squad.length
+                        ? attackingTeam.squad[
+                              Math.floor(
+                                  Math.random() *
+                                      attackingTeam.squad.length
+                              )
+                          ]
+                        : attackingTeam.ownerId;
+
+                getPlayer(assisterId).assists++;
+                addXP(assisterId, 100);
+
+                event += `\n🎯 <@${assisterId}> hücumun hazırlanmasında önemli rol oynadı.`;
+            }
+
+            const minutes = Math.floor(state.seconds / 60);
+            const seconds = String(state.seconds % 60).padStart(2, "0");
+
+            const updated = new EmbedBuilder()
+                .setColor(goal ? "#57F287" : "#5865F2")
+                .setTitle("⚽ United League • Canlı Maç")
+                .setDescription(
+                    `🏟️ **${team1.name}** vs **${team2.name}**\n\n` +
+                    `# ${state.score1} - ${state.score2}\n\n` +
+                    `⏱️ ${minutes}:${seconds}\n\n` +
+                    `📢 ${event}`
+                )
+                .setFooter({
+                    text: "United League • Canlı Maç Sistemi"
+                })
+                .setTimestamp();
+
+            await sent.edit({
+                embeds: [updated]
+            });
+
+            if (state.seconds >= 300) {
+                clearInterval(interval);
+
+                match.score1 = state.score1;
+                match.score2 = state.score2;
+                match.status = "finished";
+                match.finishedAt = Date.now();
+
+                team1.stats.played++;
+                team2.stats.played++;
+
+                team1.stats.gf += state.score1;
+                team1.stats.ga += state.score2;
+
+                team2.stats.gf += state.score2;
+                team2.stats.ga += state.score1;
+
+                if (state.score1 > state.score2) {
+                    team1.stats.wins++;
+                    team2.stats.losses++;
+                    team1.stats.points += 3;
+                } else if (state.score2 > state.score1) {
+                    team2.stats.wins++;
+                    team1.stats.losses++;
+                    team2.stats.points += 3;
+                } else {
+                    team1.stats.draws++;
+                    team2.stats.draws++;
+                    team1.stats.points++;
+                    team2.stats.points++;
+                }
+
+                const allPlayers = [
+                    ...new Set([
+                        ...team1.squad,
+                        ...team2.squad
+                    ])
+                ];
+
+                for (const id of allPlayers) {
+                    const p = getPlayer(id);
+                    p.matches++;
+                    addXP(id, 100);
+                    awardAchievement(id, "İlk Maç");
+                }
+
+                saveData();
+
+                const finalEmbed = new EmbedBuilder()
+                    .setColor("#FEE75C")
+                    .setTitle("🏁 United League • Maç Bitti")
+                    .setDescription(
+                        `🏟️ **${team1.name}** vs **${team2.name}**\n\n` +
+                        `# ${state.score1} - ${state.score2}\n\n` +
+                        `🏁 **Maç tamamlandı.**`
+                    )
+                    .addFields(
+                        {
+                            name: team1.name,
+                            value: `⚽ ${state.score1}`,
+                            inline: true
+                        },
+                        {
+                            name: team2.name,
+                            value: `⚽ ${state.score2}`,
+                            inline: true
+                        }
+                    )
+                    .setTimestamp();
+
+                await sent.edit({
+                    embeds: [finalEmbed]
+                });
+
+                await logAction(
+                    message.guild,
+                    "Maç",
+                    `**${team1.name} ${state.score1}-${state.score2} ${team2.name}**`
+                );
+            }
+        } catch (err) {
+            console.error("Maç hatası:", err.message);
+            clearInterval(interval);
+        }
+    }, 1000);
+}
+
+/* =========================
+   ÇEKİLİŞ
+========================= */
+
+function parseDuration(input) {
+    if (!input) return 0;
+
+    const text = String(input)
+        .toLowerCase()
+        .replace(/\s/g, "");
+
+    const match = text.match(
+        /^(\d+(?:\.\d+)?)(s|sn|sec|saniye|m|dk|dakika|h|sa|saat|d|g|gün)$/
+    );
+
+    if (!match) return 0;
+
+    const number = Number(match[1]);
+    const unit = match[2];
+
+    if (
+        ["s", "sn", "sec", "saniye"].includes(unit)
+    ) return number * 1000;
+
+    if (
+        ["m", "dk", "dakika"].includes(unit)
+    ) return number * 60000;
+
+    if (
+        ["h", "sa", "saat"].includes(unit)
+    ) return number * 3600000;
+
+    if (
+        ["d", "g", "gün"].includes(unit)
+    ) return number * 86400000;
+
+    return 0;
+}
+
+async function finishGiveaway(id) {
+    const giveaway = data.giveaways[id];
+
+    if (!giveaway || giveaway.finished) return;
+
+    giveaway.finished = true;
+
+    const guild = client.guilds.cache.get(giveaway.guildId);
+
+    if (!guild) return;
+
+    const channel = guild.channels.cache.get(
+        giveaway.channelId
+    );
+
+    if (!channel) return;
+
+    const members = [
+        ...new Set(giveaway.entries || [])
+    ];
+
+    if (!members.length) {
+        await channel.send(
+            `🎁 **Çekiliş sona erdi fakat katılım olmadığı için kazanan çıkmadı.**`
         );
-      }
 
-      const dmEmbed =
-        new EmbedBuilder()
-          .setTitle(
-            "⚽ United League"
-          )
-          .setDescription(
-            text
-          )
-          .setColor(
-            0x5865f2
-          )
-          .setFooter({
-            text:
-              "United League • Resmî Bildirim"
-          })
-          .setTimestamp();
+        saveData();
+        return;
+    }
 
-      if (
-        destination.toLowerCase() ===
-        "all"
-      ) {
-        await message.guild.members
-          .fetch()
-          .catch(() => {});
+    const winnerId =
+        members[Math.floor(Math.random() * members.length)];
 
-        let sent = 0;
+    const prize = giveaway.prize;
 
-        for (
-          const member of
-            message.guild.members
-              .cache.values()
-        ) {
-          if (
-            member.user.bot
-          ) {
-            continue;
-          }
+    if (prize > 0) {
+        getPlayer(winnerId).budget += prize;
+    }
 
-          await member.user
-            .send({
-              embeds: [
-                dmEmbed
-              ]
-            })
-            .then(
-              () =>
-                sent++
+    awardAchievement(winnerId, "Çekiliş Kazananı");
+
+    await channel.send({
+        embeds: [
+            new EmbedBuilder()
+                .setColor("#FEE75C")
+                .setTitle("🎉 Çekiliş Sonucu")
+                .setDescription(
+                    `🏆 Kazanan: <@${winnerId}>\n\n` +
+                    `🎁 Ödül: **${formatMoney(prize)}**`
+                )
+                .setTimestamp()
+        ]
+    });
+
+    saveData();
+}
+
+function scheduleGiveaway(id) {
+    const giveaway = data.giveaways[id];
+
+    if (!giveaway || giveaway.finished) return;
+
+    const remaining =
+        giveaway.endsAt - Date.now();
+
+    if (remaining <= 0) {
+        finishGiveaway(id);
+        return;
+    }
+
+    setTimeout(
+        () => finishGiveaway(id),
+        Math.min(remaining, 2147483647)
+    );
+}
+
+/* =========================
+   ŞİRKET / SPONSOR
+========================= */
+
+const NPC_COMPANIES = {
+    Emirates: {
+        company: 65,
+        sponsor: 65
+    },
+    Adidas: {
+        company: 60,
+        sponsor: 75
+    },
+    Puma: {
+        company: 55,
+        sponsor: 60
+    },
+    Nike: {
+        company: 50,
+        sponsor: 65
+    },
+    "Coca-Cola": {
+        company: 45,
+        sponsor: 55
+    },
+    Pepsi: {
+        company: 40,
+        sponsor: 50
+    },
+    "Red Bull": {
+        company: 35,
+        sponsor: 50
+    },
+    Mercedes: {
+        company: 30,
+        sponsor: 45
+    }
+};
+
+function npcDecision(chance) {
+    return Math.random() * 100 <= chance;
+}
+
+/* =========================
+   REKLAM
+========================= */
+
+const AD_PACKAGES = {
+    Bronz: 150000,
+    Gümüş: 300000,
+    Altın: 600000,
+    Platin: 1200000,
+    Legendary: 2400000,
+    Ultimate: 4800000,
+    everyone: 100000,
+    here: 50000
+};
+
+/* =========================
+   BOT PROFİLİ
+========================= */
+
+async function updateBotPresence() {
+    try {
+        let invite = process.env.SERVER_INVITE || "";
+
+        const guild = client.guilds.cache.first();
+
+        if (!invite && guild) {
+            try {
+                const channel =
+                    guild.channels.cache.get(
+                        CONFIG.ANNOUNCEMENT_CHANNEL_ID
+                    ) ||
+                    guild.channels.cache.find(
+                        c =>
+                            c.isTextBased() &&
+                            c
+                                .permissionsFor(
+                                    guild.members.me
+                                )
+                                ?.has(
+                                    PermissionFlagsBits.CreateInstantInvite
+                                )
+                    );
+
+                if (channel) {
+                    const created =
+                        await channel.createInvite({
+                            maxAge: 0,
+                            maxUses: 0,
+                            unique: false,
+                            reason: "United League bot profili"
+                        });
+
+                    invite = `discord.gg/${created.code}`;
+                }
+            } catch {}
+        }
+
+        client.user.setPresence({
+            status: "online",
+            activities: [
+                {
+                    name: "United League | Futbol Rp",
+                    type: ActivityType.Playing,
+                    state: invite
+                        ? invite
+                        : "United League | Futbol Rp"
+                }
+            ]
+        });
+    } catch (err) {
+        console.error("Presence hatası:", err.message);
+    }
+}
+
+/* =========================
+   SAAT BAŞI DURUM
+========================= */
+
+let lastHourlyStatus = "";
+
+async function sendHourlyStatus() {
+    try {
+        const now = new Date();
+
+        const key =
+            `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}`;
+
+        if (now.getMinutes() !== 0) return;
+
+        if (lastHourlyStatus === key) return;
+
+        lastHourlyStatus = key;
+
+        const channel = client.channels.cache.get(
+            CONFIG.ANNOUNCEMENT_CHANNEL_ID
+        );
+
+        if (!channel || !channel.isTextBased()) return;
+
+        const users = client.guilds.cache.reduce(
+            (total, guild) =>
+                total + (guild.memberCount || 0),
+            0
+        );
+
+        const ping = client.ws.ping;
+
+        const embed = new EmbedBuilder()
+            .setColor("#57F287")
+            .setTitle("🤖 United League • Bot Durumu")
+            .setDescription(
+                "United League botu aktif ve sistemler çalışıyor."
             )
-            .catch(
-              () => {}
+            .addFields(
+                {
+                    name: "🟢 Durum",
+                    value: "**Aktif**",
+                    inline: true
+                },
+                {
+                    name: "🏓 Ping",
+                    value: `**${ping}ms**`,
+                    inline: true
+                },
+                {
+                    name: "🌐 Sunucu",
+                    value: `**${client.guilds.cache.size}**`,
+                    inline: true
+                },
+                {
+                    name: "👥 Kullanıcı",
+                    value: `**${users}**`,
+                    inline: true
+                },
+                {
+                    name: "🕐 Saat",
+                    value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
+                    inline: true
+                },
+                {
+                    name: "⚽ Sistem",
+                    value: "**United League | Futbol Rp**",
+                    inline: true
+                }
+            )
+            .setFooter({
+                text: "United League • Her saat başı otomatik durum"
+            })
+            .setTimestamp();
+
+        await channel.send({
+            embeds: [embed]
+        });
+    } catch (err) {
+        console.error("Saatlik durum hatası:", err.message);
+    }
+}
+
+/* =========================
+   READY
+========================= */
+
+client.once("ready", async () => {
+    console.log(
+        `United League bot aktif: ${client.user.tag}`
+    );
+
+    for (const guild of client.guilds.cache.values()) {
+        try {
+            await ensureMainRoles(guild);
+        } catch {}
+    }
+
+    await updateBotPresence();
+
+    for (const id of Object.keys(data.giveaways)) {
+        scheduleGiveaway(id);
+    }
+
+    setInterval(async () => {
+        await updateBotPresence();
+        await sendHourlyStatus();
+    }, 20000);
+
+    console.log("Tüm sistemler hazır.");
+});
+
+/* =========================
+   ÜYE GİRİŞİ
+========================= */
+
+client.on("guildMemberAdd", async member => {
+    try {
+        await ensureMainRoles(member.guild);
+
+        const kayitsiz = member.guild.roles.cache.find(
+            r => r.name === "Kayıtsız"
+        );
+
+        if (kayitsiz) {
+            await member.roles.add(kayitsiz);
+        }
+
+        getPlayer(member.id);
+        saveData();
+
+        const channel =
+            member.guild.channels.cache.get(
+                CONFIG.ANNOUNCEMENT_CHANNEL_ID
+            );
+
+        const registerChannel =
+            member.guild.channels.cache.find(
+                c =>
+                    c.isTextBased() &&
+                    [
+                        "kayıt",
+                        "kayit",
+                        "kayıt-kanalı",
+                        "kayit-kanali"
+                    ].includes(c.name.toLowerCase())
+            );
+
+        const target = registerChannel || channel;
+
+        if (target) {
+            const embed = new EmbedBuilder()
+                .setColor("#5865F2")
+                .setTitle("👋 Yeni Oyuncu")
+                .setDescription(
+                    `**${member.user.username}** sunucuya katıldı.\n\n` +
+                    `Kayıt Yetkilisi: <@&${CONFIG.ROLES.REGISTER}>`
+                )
+                .setThumbnail(member.user.displayAvatarURL())
+                .setTimestamp();
+
+            await target.send({
+                content: `<@&${CONFIG.ROLES.REGISTER}>`,
+                embeds: [embed]
+            });
+        }
+    } catch (err) {
+        console.error("Üye giriş hatası:", err.message);
+    }
+});
+
+/* =========================
+   BUTONLAR
+========================= */
+
+client.on("interactionCreate", async interaction => {
+    try {
+        if (!interaction.isButton()) return;
+
+        if (
+            interaction.customId === "register_player" ||
+            interaction.customId === "register_td"
+        ) {
+            if (!isRegisterStaff(interaction.member)) {
+                return interaction.reply({
+                    content:
+                        "❌ Bu butonu sadece Kayıt Yetkilisi kullanabilir.",
+                    ephemeral: true
+                });
+            }
+
+            const playerRole =
+                await getOrCreateRole(
+                    interaction.guild,
+                    "Futbolcu",
+                    "#57F287",
+                    true
+                );
+
+            const tdRole =
+                await getOrCreateRole(
+                    interaction.guild,
+                    "Teknik Direktör",
+                    "#5865F2",
+                    true
+                );
+
+            const kayitsiz =
+                interaction.guild.roles.cache.find(
+                    r => r.name === "Kayıtsız"
+                );
+
+            const player =
+                getPlayer(interaction.user.id);
+
+            if (interaction.customId === "register_player") {
+                await interaction.member.roles.add(playerRole);
+
+                if (kayitsiz) {
+                    await interaction.member.roles.remove(
+                        kayitsiz
+                    );
+                }
+
+                player.registered = true;
+                player.roleType = "Futbolcu";
+
+                saveData();
+
+                await interaction.reply({
+                    content:
+                        `⚽ ${interaction.member} artık **Futbolcu** olarak kayıtlı.`,
+                    ephemeral: false
+                });
+            }
+
+            if (interaction.customId === "register_td") {
+                await interaction.member.roles.add(tdRole);
+
+                if (kayitsiz) {
+                    await interaction.member.roles.remove(
+                        kayitsiz
+                    );
+                }
+
+                player.registered = true;
+                player.roleType = "Teknik Direktör";
+
+                saveData();
+
+                await interaction.reply({
+                    content:
+                        `🎩 ${interaction.member} artık **Teknik Direktör** olarak kayıtlı.`,
+                    ephemeral: false
+                });
+            }
+
+            return;
+        }
+
+        if (interaction.customId.startsWith("kap_")) {
+            const parts =
+                interaction.customId.split("_");
+
+            const type = parts[1];
+            const kapId = parts.slice(2).join("_");
+
+            const kap =
+                data.transfers.find(
+                    t => t.id === kapId
+                );
+
+            if (!kap || kap.status !== "pending") {
+                return interaction.reply({
+                    content:
+                        "❌ Bu KAP artık aktif değil.",
+                    ephemeral: true
+                });
+            }
+
+            if (type === "reject") {
+                const player = getPlayer(
+                    kap.playerId
+                );
+
+                const buyer = getTeam(
+                    kap.buyerTeamId
+                );
+
+                const seller = kap.sellerTeamId
+                    ? getTeam(kap.sellerTeamId)
+                    : null;
+
+                const allowed =
+                    interaction.user.id ===
+                        kap.playerId ||
+                    interaction.user.id ===
+                        buyer?.ownerId ||
+                    interaction.user.id ===
+                        seller?.ownerId ||
+                    isAdmin(interaction.member);
+
+                if (!allowed) {
+                    return interaction.reply({
+                        content:
+                            "❌ Bu KAP'ı reddetme yetkin yok.",
+                        ephemeral: true
+                    });
+                }
+
+                kap.status = "rejected";
+                saveData();
+
+                return interaction.reply({
+                    content:
+                        "❌ KAP reddedildi ve transfer iptal edildi."
+                });
+            }
+
+            if (type === "player") {
+                if (
+                    interaction.user.id !==
+                    kap.playerId
+                ) {
+                    return interaction.reply({
+                        content:
+                            "❌ Bu onayı sadece oyuncu verebilir.",
+                        ephemeral: true
+                    });
+                }
+
+                kap.playerApproved = true;
+            }
+
+            if (type === "buyer") {
+                const buyer =
+                    getTeam(kap.buyerTeamId);
+
+                if (
+                    !buyer ||
+                    interaction.user.id !==
+                        buyer.ownerId
+                ) {
+                    return interaction.reply({
+                        content:
+                            "❌ Bu onayı sadece alıcı takımın Teknik Direktörü verebilir.",
+                        ephemeral: true
+                    });
+                }
+
+                kap.buyerApproved = true;
+            }
+
+            if (type === "seller") {
+                const seller =
+                    kap.sellerTeamId
+                        ? getTeam(kap.sellerTeamId)
+                        : null;
+
+                if (
+                    !seller ||
+                    interaction.user.id !==
+                        seller.ownerId
+                ) {
+                    return interaction.reply({
+                        content:
+                            "❌ Bu onayı sadece satıcı takımın Teknik Direktörü verebilir.",
+                        ephemeral: true
+                    });
+                }
+
+                kap.sellerApproved = true;
+            }
+
+            if (
+                kap.playerApproved &&
+                kap.buyerApproved &&
+                kap.sellerApproved
+            ) {
+                const completed =
+                    await completeKAP(
+                        kap,
+                        interaction.guild
+                    );
+
+                if (completed) {
+                    return interaction.reply({
+                        content:
+                            "✅ Tüm onaylar tamamlandı. Transfer başarıyla gerçekleşti."
+                    });
+                }
+            }
+
+            saveData();
+
+            return interaction.reply({
+                content:
+                    "✅ Onay kaydedildi. Diğer onaylar bekleniyor."
+            });
+        }
+    } catch (err) {
+        console.error("Interaction hatası:", err.message);
+
+        if (!interaction.replied) {
+            try {
+                await interaction.reply({
+                    content: "❌ İşlem sırasında hata oluştu.",
+                    ephemeral: true
+                });
+            } catch {}
+        }
+    }
+});
+
+/* =========================
+   MESAJ KOMUTLARI
+========================= */
+
+client.on("messageCreate", async message => {
+    try {
+        if (!message.guild) return;
+        if (message.author.bot) return;
+
+        const content = message.content.trim();
+
+        if (!content.startsWith(CONFIG.PREFIX)) {
+            return;
+        }
+
+        const parts = content.split(/\s+/);
+
+        const command =
+            parts.shift().toLocaleLowerCase("tr-TR");
+
+        const args = parts;
+
+        /* =====================
+           PING
+        ===================== */
+
+        if (command === ".ping") {
+            const start = Date.now();
+
+            const msg = await message.reply("🏓 Pong!");
+
+            const latency =
+                Date.now() - start;
+
+            await msg.edit(
+                `🏓 **Pong!**\n` +
+                `📡 WebSocket: **${client.ws.ping}ms**\n` +
+                `💬 Gecikme: **${latency}ms**`
+            );
+
+            return;
+        }
+
+        /* =====================
+           YARDIM
+        ===================== */
+
+        if (
+            command === ".yardım" ||
+            command === ".help"
+        ) {
+            const embed = new EmbedBuilder()
+                .setColor("#5865F2")
+                .setTitle("📚 United League • Komutlar")
+                .setDescription(
+                    [
+                        "**👤 Oyuncu**",
+                        "`.k @oyuncu`",
+                        "`.profil @oyuncu`",
+                        "`.istatistik @oyuncu`",
+                        "`.değer @oyuncu`",
+                        "`.değerler`",
+                        "`.ant` / `.antrenman`",
+                        "`.pen` / `.penaltı`",
+                        "`.bütçe`",
+                        "`.para @oyuncu miktar`",
+                        "`.paragönder @oyuncu miktar`",
+                        "",
+                        "**⚽ Takım**",
+                        "`.takımoluştur Takım`",
+                        "`.takım`",
+                        "`.takımım`",
+                        "`.takımlar`",
+                        "`.kadro`",
+                        "`.kadro @oyuncu`",
+                        "`.kadrocikar @oyuncu`",
+                        "`.formasyon 4-3-3`",
+                        "`.takımbütçe`",
+                        "`.takımpara miktar`",
+                        "`.takımharca miktar`",
+                        "`.takımbütçegönder @takım miktar`",
+                        "",
+                        "**💰 Değer**",
+                        "`.dver @oyuncu 5M`",
+                        "`.değersil @oyuncu 2M`",
+                        "`.dsil @oyuncu 2M`",
+                        "",
+                        "**🔄 Transfer**",
+                        "`.kap @oyuncu @takım 5M`",
+                        "`.transfer @oyuncu @takım 5M`",
+                        "`.transferler`",
+                        "`.transfergeçmişi`",
+                        "",
+                        "**🏟️ Maç**",
+                        "`.maç @takım1 @takım2`",
+                        "`.maçlar`",
+                        "`.maçsonucu`",
+                        "`.lig`",
+                        "`.puan`",
+                        "`.golkrallığı`",
+                        "`.asistkrallığı`",
+                        "`.sezon`",
+                        "",
+                        "**🎁 Etkinlik**",
+                        "`.çekiliş 5M€ 5saat`",
+                        "`.yenikazanan`",
+                        "",
+                        "**🛡️ Moderasyon**",
+                        "`.sil 100`",
+                        "`.kick @oyuncu`",
+                        "`.ban @oyuncu`",
+                        "`.mute @oyuncu`",
+                        "`.unmute @oyuncu`",
+                        "`.kilitle`",
+                        "`.kilitaç`",
+                        "",
+                        "**📢 Medya / DM**",
+                        "`.tweet Mesaj`",
+                        "`.haber Mesaj`",
+                        "`.dm all Mesaj`",
+                        "`.dm @oyuncu Mesaj`",
+                        "",
+                        "**🏢 NPC**",
+                        "`.şirketler`",
+                        "`.şirketbaşvur Marka`",
+                        "`.şirketbaşvurularım`",
+                        "`.sponsorlar`",
+                        "`.sponsorbaşvur Marka`",
+                        "`.sponsorlarım`",
+                        "",
+                        "**🎫 Ticket**",
+                        "`.ticket`",
+                        "`.ticketkapat`",
+                        "",
+                        "**📣 Reklam**",
+                        "`.reklampaketleri`",
+                        "`.reklam Paket Mesaj`"
+                    ].join("\n")
+                );
+
+            await message.reply({
+                embeds: [embed]
+            });
+
+            return;
+        }
+
+        /* =====================
+           KAYIT
+        ===================== */
+
+        if (
+            command === ".k" ||
+            command === ".kayıt"
+        ) {
+            if (!isRegisterStaff(message.member)) {
+                return message.reply(
+                    "❌ Bu komutu sadece **Kayıt Yetkilisi** kullanabilir."
+                );
+            }
+
+            await sendRegistrationMessage(message);
+            return;
+        }
+
+        /* =====================
+           DEĞER VER
+        ===================== */
+
+        if (command === ".dver") {
+            if (!isValueStaff(message.member)) {
+                return message.reply(
+                    "❌ Bu komutu sadece **Değer Yetkilisi** kullanabilir."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            const amount =
+                parseMoney(args[1]);
+
+            if (!target) {
+                return message.reply(
+                    "❌ Kullanım: `.dver @oyuncu 5M`"
+                );
+            }
+
+            if (!amount || amount <= 0) {
+                return message.reply(
+                    "❌ Geçerli miktar gir."
+                );
+            }
+
+            const player =
+                getPlayer(target.id);
+
+            const oldValue =
+                player.value;
+
+            player.value += amount;
+
+            saveData();
+
+            const changed =
+                await updatePlayerValueNickname(
+                    target,
+                    player.value
+                );
+
+            await logAction(
+                message.guild,
+                "Değer Verildi",
+                `${target} **${formatMoney(amount)}** değer aldı.\n` +
+                `Eski: **${formatMoney(oldValue)}**\n` +
+                `Yeni: **${formatMoney(player.value)}**`
+            );
+
+            return message.reply(
+                `✅ ${target} değerine **${formatMoney(amount)}** eklendi.\n` +
+                `💰 **${formatMoney(oldValue)} → ${formatMoney(player.value)}**` +
+                (changed
+                    ? "\n🏷️ Sadece değer kısmı değiştirildi."
+                    : "\n⚠️ Değer değişti fakat takma ad değiştirilemedi.")
             );
         }
 
-        return message.reply(
-          `📩 DM gönderimi tamamlandı.
+        /* =====================
+           DEĞER SİL
+        ===================== */
 
-✅ Gönderilen: **${sent}**`
+        if (
+            command === ".değersil" ||
+            command === ".dsil"
+        ) {
+            if (!isValueStaff(message.member)) {
+                return message.reply(
+                    "❌ Bu komutu sadece **Değer Yetkilisi** kullanabilir."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            const amount =
+                parseMoney(args[1]);
+
+            if (!target) {
+                return message.reply(
+                    "❌ Kullanım: `.değersil @oyuncu 2M`"
+                );
+            }
+
+            if (!amount || amount <= 0) {
+                return message.reply(
+                    "❌ Geçerli miktar gir."
+                );
+            }
+
+            const player =
+                getPlayer(target.id);
+
+            const oldValue =
+                player.value;
+
+            player.value =
+                Math.max(
+                    0,
+                    player.value - amount
+                );
+
+            saveData();
+
+            const changed =
+                await updatePlayerValueNickname(
+                    target,
+                    player.value
+                );
+
+            await logAction(
+                message.guild,
+                "Değer Silindi",
+                `${target} değerinden **${formatMoney(amount)}** silindi.\n` +
+                `Eski: **${formatMoney(oldValue)}**\n` +
+                `Yeni: **${formatMoney(player.value)}**`
+            );
+
+            return message.reply(
+                `✅ ${target} değerinden **${formatMoney(amount)}** silindi.\n` +
+                `💰 **${formatMoney(oldValue)} → ${formatMoney(player.value)}**` +
+                (changed
+                    ? "\n🏷️ Sadece değer kısmı değiştirildi."
+                    : "\n⚠️ Değer değişti fakat takma ad değiştirilemedi.")
+            );
+        }
+
+        /* =====================
+           DEĞER GÖR
+        ===================== */
+
+        if (command === ".değer") {
+            const target =
+                message.mentions.members.first() ||
+                message.member;
+
+            const player =
+                getPlayer(target.id);
+
+            return message.reply(
+                `💰 ${target} oyuncusunun değeri: **${formatMoney(player.value)}**`
+            );
+        }
+
+        /* =====================
+           DEĞERLER
+        ===================== */
+
+        if (command === ".değerler") {
+            const list =
+                Object.entries(data.players)
+                    .sort(
+                        (a, b) =>
+                            b[1].value - a[1].value
+                    )
+                    .slice(0, 10);
+
+            const text = list.length
+                ? list.map(
+                      ([id, p], i) =>
+                          `**${i + 1}.** <@${id}> — **${formatMoney(p.value)}**`
+                  ).join("\n")
+                : "Henüz oyuncu yok.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#FEE75C")
+                        .setTitle("💰 Değer Sıralaması")
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           ANTRENMAN
+        ===================== */
+
+        if (
+            command === ".ant" ||
+            command === ".antrenman"
+        ) {
+            const player =
+                getPlayer(message.author.id);
+
+            player.training++;
+
+            if (player.training >= 10) {
+                player.training = 1;
+
+                player.value +=
+                    CONFIG.TRAINING_REWARD;
+
+                addXP(
+                    message.author.id,
+                    300
+                );
+
+                awardAchievement(
+                    message.author.id,
+                    "Antrenman Ustası"
+                );
+
+                saveData();
+
+                const changed =
+                    await updatePlayerValueNickname(
+                        message.member,
+                        player.value
+                    );
+
+                return message.reply(
+                    `🏋️ **10/10 antrenman tamamlandı!**\n` +
+                    `💰 Otomatik değer ödülü: **+${formatMoney(CONFIG.TRAINING_REWARD)}**\n` +
+                    `💎 Yeni değer: **${formatMoney(player.value)}**\n` +
+                    `📊 Yeni seri: **1/10**` +
+                    (changed
+                        ? "\n🏷️ Takma addaki sadece değer güncellendi."
+                        : "")
+                );
+            }
+
+            saveData();
+
+            return message.reply(
+                `🏋️ Antrenman ilerlemesi: **${player.training}/10**`
+            );
+        }
+
+        /* =====================
+           PENALTI
+        ===================== */
+
+        if (
+            command === ".pen" ||
+            command === ".penaltı"
+        ) {
+            const player =
+                getPlayer(message.author.id);
+
+            const goal =
+                Math.random() < 0.65;
+
+            if (!goal) {
+                addXP(
+                    message.author.id,
+                    50
+                );
+
+                saveData();
+
+                return message.reply(
+                    "❌ **KAÇIRDI!** Top kalenin yanından dışarı çıktı."
+                );
+            }
+
+            player.penaltyGoals++;
+            player.goals++;
+            player.value +=
+                CONFIG.PENALTY_REWARD;
+
+            addXP(
+                message.author.id,
+                150
+            );
+
+            awardAchievement(
+                message.author.id,
+                "Penaltı Uzmanı"
+            );
+
+            saveData();
+
+            const changed =
+                await updatePlayerValueNickname(
+                    message.member,
+                    player.value
+                );
+
+            return message.reply(
+                `⚽ **GOOOL!** Penaltı başarıyla gole çevrildi!\n` +
+                `💰 Otomatik değer: **+${formatMoney(CONFIG.PENALTY_REWARD)}**\n` +
+                `💎 Yeni değer: **${formatMoney(player.value)}**` +
+                (changed
+                    ? "\n🏷️ Takma addaki sadece değer güncellendi."
+                    : "")
+            );
+        }
+
+        /* =====================
+           PROFİL
+        ===================== */
+
+        if (command === ".profil") {
+            const target =
+                message.mentions.members.first() ||
+                message.member;
+
+            const player =
+                getPlayer(target.id);
+
+            const team =
+                player.teamId
+                    ? getTeam(player.teamId)
+                    : null;
+
+            const embed = new EmbedBuilder()
+                .setColor("#5865F2")
+                .setTitle(`👤 ${target.user.username}`)
+                .setThumbnail(
+                    target.user.displayAvatarURL()
+                )
+                .addFields(
+                    {
+                        name: "💰 Değer",
+                        value: formatMoney(player.value),
+                        inline: true
+                    },
+                    {
+                        name: "💵 Bütçe",
+                        value: formatMoney(player.budget),
+                        inline: true
+                    },
+                    {
+                        name: "⚽ Takım",
+                        value: team
+                            ? team.name
+                            : "Serbest",
+                        inline: true
+                    },
+                    {
+                        name: "🏟️ Maç",
+                        value: String(player.matches),
+                        inline: true
+                    },
+                    {
+                        name: "⚽ Gol",
+                        value: String(player.goals),
+                        inline: true
+                    },
+                    {
+                        name: "🎯 Asist",
+                        value: String(player.assists),
+                        inline: true
+                    },
+                    {
+                        name: "⭐ XP",
+                        value: String(player.xp),
+                        inline: true
+                    },
+                    {
+                        name: "🏆 Başarım",
+                        value: String(
+                            player.achievements.length
+                        ),
+                        inline: true
+                    }
+                )
+                .setTimestamp();
+
+            return message.reply({
+                embeds: [embed]
+            });
+        }
+
+        /* =====================
+           İSTATİSTİK
+        ===================== */
+
+        if (command === ".istatistik") {
+            const target =
+                message.mentions.members.first() ||
+                message.member;
+
+            const p =
+                getPlayer(target.id);
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#57F287")
+                        .setTitle(
+                            `📊 ${target.user.username} • İstatistik`
+                        )
+                        .addFields(
+                            {
+                                name: "Maç",
+                                value: `${p.matches}`,
+                                inline: true
+                            },
+                            {
+                                name: "Gol",
+                                value: `${p.goals}`,
+                                inline: true
+                            },
+                            {
+                                name: "Asist",
+                                value: `${p.assists}`,
+                                inline: true
+                            },
+                            {
+                                name: "Penaltı Golü",
+                                value: `${p.penaltyGoals}`,
+                                inline: true
+                            },
+                            {
+                                name: "Antrenman",
+                                value: `${p.training}/10`,
+                                inline: true
+                            },
+                            {
+                                name: "XP",
+                                value: `${p.xp}`,
+                                inline: true
+                            }
+                        )
+                ]
+            });
+        }
+
+        /* =====================
+           OYUNCU BÜTÇE
+        ===================== */
+
+        if (command === ".bütçe") {
+            const target =
+                message.mentions.members.first();
+
+            if (
+                target &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    `💰 Bütçen: **${formatMoney(getPlayer(message.author.id).budget)}**`
+                );
+            }
+
+            const member =
+                target || message.member;
+
+            return message.reply(
+                `💰 ${member} bütçesi: **${formatMoney(getPlayer(member.id).budget)}**`
+            );
+        }
+
+        /* =====================
+           PARA VER
+        ===================== */
+
+        if (command === ".para") {
+            if (!isAdmin(message.member)) {
+                return message.reply(
+                    "❌ Bu komutu sadece yönetici kullanabilir."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            const amount =
+                parseMoney(args[1]);
+
+            if (!target || amount <= 0) {
+                return message.reply(
+                    "❌ Kullanım: `.para @oyuncu 5M`"
+                );
+            }
+
+            getPlayer(target.id).budget += amount;
+
+            saveData();
+
+            return message.reply(
+                `💵 ${target} hesabına **${formatMoney(amount)}** eklendi.`
+            );
+        }
+
+        /* =====================
+           PARA GÖNDER
+        ===================== */
+
+        if (command === ".paragönder") {
+            const target =
+                message.mentions.members.first();
+
+            const amount =
+                parseMoney(args[1]);
+
+            if (
+                !target ||
+                target.id === message.author.id ||
+                amount <= 0
+            ) {
+                return message.reply(
+                    "❌ Kullanım: `.paragönder @oyuncu 5M`"
+                );
+            }
+
+            const sender =
+                getPlayer(message.author.id);
+
+            if (sender.budget < amount) {
+                return message.reply(
+                    "❌ Yeterli bütçen yok."
+                );
+            }
+
+            sender.budget -= amount;
+
+            getPlayer(target.id).budget += amount;
+
+            saveData();
+
+            return message.reply(
+                `💸 ${target} kullanıcısına **${formatMoney(amount)}** gönderildi.`
+            );
+        }
+
+        /* =====================
+           TAKIM OLUŞTUR
+        ===================== */
+
+        if (command === ".takımoluştur") {
+            const tdRole =
+                message.guild.roles.cache.find(
+                    r => r.name === "Teknik Direktör"
+                );
+
+            if (
+                !tdRole ||
+                !message.member.roles.cache.has(
+                    tdRole.id
+                )
+            ) {
+                return message.reply(
+                    "❌ Takım oluşturmak için **Teknik Direktör** olmalısın."
+                );
+            }
+
+            const teamName =
+                args.join(" ").trim();
+
+            if (!teamName) {
+                return message.reply(
+                    "❌ Kullanım: `.takımoluştur Galatasaray`"
+                );
+            }
+
+            const result =
+                await createTeam(
+                    message.guild,
+                    message.author.id,
+                    teamName
+                );
+
+            if (result.error) {
+                return message.reply(
+                    `❌ ${result.error}`
+                );
+            }
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#57F287")
+                        .setTitle("⚽ Takım Oluşturuldu")
+                        .setDescription(
+                            `🏟️ **${result.team.name}**\n\n` +
+                            `👤 Teknik Direktör: ${message.member}\n` +
+                            `💰 Başlangıç bütçesi: **${formatMoney(result.team.budget)}**\n` +
+                            `📋 Formasyon: **${result.team.formation}**`
+                        )
+                        .setTimestamp()
+                ]
+            });
+        }
+
+        /* =====================
+           TAKIM
+        ===================== */
+
+        if (
+            command === ".takım" ||
+            command === ".takımım"
+        ) {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(
+                            `⚽ ${team.name}`
+                        )
+                        .addFields(
+                            {
+                                name: "🎩 TD",
+                                value: `<@${team.ownerId}>`,
+                                inline: true
+                            },
+                            {
+                                name: "💰 Bütçe",
+                                value: formatMoney(team.budget),
+                                inline: true
+                            },
+                            {
+                                name: "📋 Formasyon",
+                                value: team.formation,
+                                inline: true
+                            },
+                            {
+                                name: "👥 Kadro",
+                                value: `${team.squad.length} oyuncu`,
+                                inline: true
+                            },
+                            {
+                                name: "🏆 Puan",
+                                value: `${team.stats.points}`,
+                                inline: true
+                            },
+                            {
+                                name: "⚽ Averaj",
+                                value: `${team.stats.gf}-${team.stats.ga}`,
+                                inline: true
+                            }
+                        )
+                ]
+            });
+        }
+
+        /* =====================
+           TAKIMLAR
+        ===================== */
+
+        if (command === ".takımlar") {
+            const teams =
+                Object.values(data.teams);
+
+            const text = teams.length
+                ? teams.map(
+                      (t, i) =>
+                          `**${i + 1}.** ${t.name} — ${formatMoney(t.budget)}`
+                  ).join("\n")
+                : "Henüz takım oluşturulmadı.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle("🏟️ United League • Takımlar")
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           FORMASYON
+        ===================== */
+
+        if (command === ".formasyon") {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            if (!args[0]) {
+                return message.reply(
+                    `📋 Mevcut formasyonun: **${team.formation}**\n\n` +
+                    `Geçerli formasyonlar:\n${FORMATIONS.join(" • ")}`
+                );
+            }
+
+            const formation =
+                args[0].replace(/\s/g, "");
+
+            if (!FORMATIONS.includes(formation)) {
+                return message.reply(
+                    `❌ Geçersiz formasyon.\n\nGeçerli: ${FORMATIONS.join(" • ")}`
+                );
+            }
+
+            team.formation = formation;
+
+            saveData();
+
+            return message.reply(
+                `✅ **${team.name}** formasyonu **${formation}** olarak ayarlandı.`
+            );
+        }
+
+        /* =====================
+           KADRO
+        ===================== */
+
+        if (command === ".kadro") {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            if (!args[0]) {
+                const players =
+                    team.squad.length
+                        ? team.squad.map(
+                              (id, i) =>
+                                  `**${i + 1}.** <@${id}>`
+                          ).join("\n")
+                        : "Kadro boş.";
+
+                return message.reply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor("#5865F2")
+                            .setTitle(
+                                `📋 ${team.name} • Kadro`
+                            )
+                            .setDescription(
+                                `📐 **Formasyon:** ${team.formation}\n\n${players}`
+                            )
+                    ]
+                });
+            }
+
+            if (message.mentions.members.size === 0) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (
+                message.author.id !==
+                team.ownerId &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    "❌ Kadroyu sadece takımın Teknik Direktörü düzenleyebilir."
+                );
+            }
+
+            if (
+                !team.squad.includes(
+                    target.id
+                )
+            ) {
+                team.squad.push(target.id);
+            }
+
+            getPlayer(target.id).teamId =
+                team.id;
+
+            saveData();
+
+            return message.reply(
+                `✅ ${target} **${team.name}** kadrosuna eklendi.`
+            );
+        }
+
+        /* =====================
+           KADRO ÇIKAR
+        ===================== */
+
+        if (command === ".kadrocikar") {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            if (
+                message.author.id !==
+                team.ownerId &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    "❌ Bu işlem için takım TD'si olmalısın."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (!target) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            team.squad =
+                team.squad.filter(
+                    id => id !== target.id
+                );
+
+            const player =
+                getPlayer(target.id);
+
+            if (player.teamId === team.id) {
+                player.teamId = null;
+            }
+
+            saveData();
+
+            return message.reply(
+                `✅ ${target} **${team.name}** kadrosundan çıkarıldı.`
+            );
+        }
+
+        /* =====================
+           TAKIM BÜTÇE
+        ===================== */
+
+        if (command === ".takımbütçe") {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            return message.reply(
+                `💰 **${team.name}** takım bütçesi: **${formatMoney(team.budget)}**`
+            );
+        }
+
+        /* =====================
+           TAKIM PARA
+        ===================== */
+
+        if (command === ".takımpara") {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            const amount =
+                parseMoney(args[0]);
+
+            if (
+                message.author.id !==
+                team.ownerId &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    "❌ Takım bütçesini sadece Teknik Direktör kullanabilir."
+                );
+            }
+
+            if (amount <= 0) {
+                return message.reply(
+                    "❌ Geçerli miktar gir."
+                );
+            }
+
+            team.budget += amount;
+
+            saveData();
+
+            return message.reply(
+                `💰 **${formatMoney(amount)}** takım bütçesine eklendi.`
+            );
+        }
+
+        /* =====================
+           TAKIM HARCAMA
+        ===================== */
+
+        if (command === ".takımharca") {
+            const team =
+                getUserTeam(message.author.id);
+
+            if (!team) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            const amount =
+                parseMoney(args[0]);
+
+            if (
+                message.author.id !==
+                team.ownerId &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    "❌ Takım bütçesini sadece Teknik Direktör kullanabilir."
+                );
+            }
+
+            if (
+                amount <= 0 ||
+                team.budget < amount
+            ) {
+                return message.reply(
+                    "❌ Yetersiz takım bütçesi."
+                );
+            }
+
+            team.budget -= amount;
+
+            saveData();
+
+            return message.reply(
+                `💸 Takım bütçesinden **${formatMoney(amount)}** harcandı.`
+            );
+        }
+
+        /* =====================
+           TAKIM BÜTÇE GÖNDER
+        ===================== */
+
+        if (command === ".takımbütçegönder") {
+            const sender =
+                getUserTeam(message.author.id);
+
+            if (!sender) {
+                return message.reply(
+                    "❌ Bir takımın yok."
+                );
+            }
+
+            if (
+                message.author.id !==
+                sender.ownerId &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    "❌ Sadece takım TD'si kullanabilir."
+                );
+            }
+
+            const targetMention =
+                message.mentions.roles.first();
+
+            const amount =
+                parseMoney(
+                    args[args.length - 1]
+                );
+
+            let targetTeam = null;
+
+            if (targetMention) {
+                targetTeam =
+                    Object.values(data.teams)
+                        .find(
+                            t =>
+                                t.roleId ===
+                                targetMention.id
+                        );
+            }
+
+            if (!targetTeam) {
+                const name =
+                    args
+                        .slice(
+                            0,
+                            args.length - 1
+                        )
+                        .join(" ");
+
+                targetTeam =
+                    Object.values(data.teams)
+                        .find(
+                            t =>
+                                t.name.toLowerCase() ===
+                                name.toLowerCase()
+                        );
+            }
+
+            if (!targetTeam) {
+                return message.reply(
+                    "❌ Hedef takım bulunamadı."
+                );
+            }
+
+            if (
+                targetTeam.id === sender.id
+            ) {
+                return message.reply(
+                    "❌ Aynı takıma para gönderemezsin."
+                );
+            }
+
+            if (
+                amount <= 0 ||
+                sender.budget < amount
+            ) {
+                return message.reply(
+                    "❌ Yetersiz bütçe."
+                );
+            }
+
+            sender.budget -= amount;
+            targetTeam.budget += amount;
+
+            saveData();
+
+            return message.reply(
+                `💸 **${sender.name}** → **${targetTeam.name}**\n` +
+                `💰 Gönderilen: **${formatMoney(amount)}**`
+            );
+        }
+
+        /* =====================
+           TRANSFER / KAP
+        ===================== */
+
+        if (
+            command === ".kap" ||
+            command === ".transfer"
+        ) {
+            const target =
+                message.mentions.members.first();
+
+            const teamMention =
+                message.mentions.roles.first();
+
+            const amount =
+                parseMoney(
+                    args[args.length - 1]
+                );
+
+            if (!target || amount <= 0) {
+                return message.reply(
+                    `❌ Kullanım: \`${command} @oyuncu @takım 5M\``
+                );
+            }
+
+            let buyerTeam = null;
+
+            if (teamMention) {
+                buyerTeam =
+                    Object.values(data.teams)
+                        .find(
+                            t =>
+                                t.roleId ===
+                                teamMention.id
+                        );
+            }
+
+            if (!buyerTeam) {
+                const possibleName =
+                    args
+                        .slice(
+                            1,
+                            args.length - 1
+                        )
+                        .join(" ");
+
+                buyerTeam =
+                    Object.values(data.teams)
+                        .find(
+                            t =>
+                                t.name.toLowerCase() ===
+                                possibleName.toLowerCase()
+                        );
+            }
+
+            if (!buyerTeam) {
+                return message.reply(
+                    "❌ Alıcı takım bulunamadı."
+                );
+            }
+
+            if (
+                message.author.id !==
+                    buyerTeam.ownerId &&
+                !isAdmin(message.member)
+            ) {
+                return message.reply(
+                    "❌ KAP'ı alıcı takımın Teknik Direktörü başlatabilir."
+                );
+            }
+
+            await createKAP(
+                message,
+                target.id,
+                buyerTeam,
+                amount
+            );
+
+            return;
+        }
+
+        /* =====================
+           TRANSFERLER
+        ===================== */
+
+        if (command === ".transferler") {
+            const pending =
+                data.transfers.filter(
+                    t =>
+                        t.status ===
+                        "pending"
+                );
+
+            if (!pending.length) {
+                return message.reply(
+                    "📄 Aktif KAP bulunmuyor."
+                );
+            }
+
+            const text =
+                pending
+                    .slice(-10)
+                    .map(t => {
+                        const buyer =
+                            getTeam(
+                                t.buyerTeamId
+                            );
+
+                        return `**${t.id}** • <@${t.playerId}> → **${buyer?.name || "?"}** • ${formatMoney(t.amount)}`;
+                    })
+                    .join("\n");
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#FEE75C")
+                        .setTitle(
+                            "📄 Aktif Transferler"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           TRANSFER GEÇMİŞİ
+        ===================== */
+
+        if (
+            command === ".transfergeçmişi"
+        ) {
+            const completed =
+                data.transfers.filter(
+                    t =>
+                        t.status ===
+                        "completed"
+                );
+
+            const text =
+                completed.length
+                    ? completed
+                          .slice(-10)
+                          .reverse()
+                          .map(t => {
+                              const buyer =
+                                  getTeam(
+                                      t.buyerTeamId
+                                  );
+
+                              return `<@${t.playerId}> → **${buyer?.name || "?"}** — ${formatMoney(t.amount)}`;
+                          })
+                          .join("\n")
+                    : "Transfer geçmişi boş.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(
+                            "📜 Transfer Geçmişi"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           MAÇ
+        ===================== */
+
+        if (command === ".maç") {
+            if (
+                !isMatchStaff(message.member)
+            ) {
+                return message.reply(
+                    "❌ Bu komutu sadece Maç Yetkilisi kullanabilir."
+                );
+            }
+
+            const roles =
+                [...message.mentions.roles.values()];
+
+            if (roles.length < 2) {
+                return message.reply(
+                    "❌ Kullanım: `.maç @takım1 @takım2`"
+                );
+            }
+
+            const team1 =
+                Object.values(data.teams)
+                    .find(
+                        t =>
+                            t.roleId ===
+                            roles[0].id
+                    );
+
+            const team2 =
+                Object.values(data.teams)
+                    .find(
+                        t =>
+                            t.roleId ===
+                            roles[1].id
+                    );
+
+            if (!team1 || !team2) {
+                return message.reply(
+                    "❌ Takımlardan biri bulunamadı."
+                );
+            }
+
+            await startMatch(
+                message,
+                team1,
+                team2
+            );
+
+            return;
+        }
+
+        /* =====================
+           MAÇLAR
+        ===================== */
+
+        if (command === ".maçlar") {
+            const matches =
+                data.matches
+                    .slice(-10)
+                    .reverse();
+
+            const text =
+                matches.length
+                    ? matches.map(m => {
+                          const t1 =
+                              getTeam(m.team1);
+
+                          const t2 =
+                              getTeam(m.team2);
+
+                          return `⚽ **${t1?.name || "?"} ${m.score1}-${m.score2} ${t2?.name || "?"}**`;
+                      }).join("\n")
+                    : "Henüz maç oynanmadı.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(
+                            "🏟️ Son Maçlar"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           MAÇ SONUCU
+        ===================== */
+
+        if (command === ".maçsonucu") {
+            const match =
+                data.matches
+                    .filter(
+                        m =>
+                            m.status ===
+                            "finished"
+                    )
+                    .at(-1);
+
+            if (!match) {
+                return message.reply(
+                    "❌ Henüz tamamlanan maç yok."
+                );
+            }
+
+            const t1 =
+                getTeam(match.team1);
+
+            const t2 =
+                getTeam(match.team2);
+
+            return message.reply(
+                `🏁 **${t1?.name} ${match.score1}-${match.score2} ${t2?.name}**`
+            );
+        }
+
+        /* =====================
+           LİG
+        ===================== */
+
+        if (
+            command === ".lig" ||
+            command === ".puan"
+        ) {
+            const teams =
+                Object.values(data.teams)
+                    .sort(
+                        (a, b) =>
+                            b.stats.points -
+                            a.stats.points ||
+                            (b.stats.gf -
+                                b.stats.ga) -
+                            (a.stats.gf -
+                                a.stats.ga)
+                    );
+
+            const text =
+                teams.length
+                    ? teams.map(
+                          (t, i) =>
+                              `**${i + 1}. ${t.name}** — ${t.stats.points} puan | ${t.stats.gf}:${t.stats.ga}`
+                      ).join("\n")
+                    : "Henüz takım yok.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#FEE75C")
+                        .setTitle(
+                            "🏆 United League • Puan Durumu"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           GOL KRALLIĞI
+        ===================== */
+
+        if (command === ".golkrallığı") {
+            const players =
+                Object.entries(data.players)
+                    .sort(
+                        (a, b) =>
+                            b[1].goals -
+                            a[1].goals
+                    )
+                    .slice(0, 10);
+
+            const text =
+                players.length
+                    ? players.map(
+                          ([id, p], i) =>
+                              `**${i + 1}.** <@${id}> — **${p.goals} gol**`
+                      ).join("\n")
+                    : "Henüz gol istatistiği yok.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#57F287")
+                        .setTitle(
+                            "⚽ Gol Krallığı"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           ASİST KRALLIĞI
+        ===================== */
+
+        if (command === ".asistkrallığı") {
+            const players =
+                Object.entries(data.players)
+                    .sort(
+                        (a, b) =>
+                            b[1].assists -
+                            a[1].assists
+                    )
+                    .slice(0, 10);
+
+            const text =
+                players.length
+                    ? players.map(
+                          ([id, p], i) =>
+                              `**${i + 1}.** <@${id}> — **${p.assists} asist**`
+                      ).join("\n")
+                    : "Henüz asist istatistiği yok.";
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(
+                            "🎯 Asist Krallığı"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           SEZON
+        ===================== */
+
+        if (command === ".sezon") {
+            const days =
+                Math.floor(
+                    (Date.now() -
+                        data.season.startedAt) /
+                        86400000
+                );
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#FEE75C")
+                        .setTitle(
+                            "🏆 United League • Sezon"
+                        )
+                        .setDescription(
+                            `📅 Sezon: **${data.season.number}**\n` +
+                            `⏱️ Sezon süresi: **${days} gün**`
+                        )
+                ]
+            });
+        }
+
+        /* =====================
+           ÇEKİLİŞ
+        ===================== */
+
+        if (command === ".çekiliş") {
+            if (
+                !isGiveawayStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Bu komutu sadece Çekiliş Yetkilisi kullanabilir."
+                );
+            }
+
+            const prize =
+                parseMoney(args[0]);
+
+            const duration =
+                parseDuration(
+                    args.slice(1).join("")
+                );
+
+            if (
+                prize <= 0 ||
+                duration <= 0
+            ) {
+                return message.reply(
+                    "❌ Kullanım: `.çekiliş 5M€ 5saat`"
+                );
+            }
+
+            const id =
+                `GW-${Date.now()}`;
+
+            data.giveaways[id] = {
+                id,
+                guildId:
+                    message.guild.id,
+                channelId:
+                    message.channel.id,
+                prize,
+                endsAt:
+                    Date.now() +
+                    duration,
+                entries: [],
+                finished: false
+            };
+
+            saveData();
+
+            const row =
+                new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(
+                                `giveaway_${id}`
+                            )
+                            .setLabel(
+                                "Katıl"
+                            )
+                            .setEmoji("🎉")
+                            .setStyle(
+                                ButtonStyle.Success
+                            )
+                    );
+
+            const embed =
+                new EmbedBuilder()
+                    .setColor("#FEE75C")
+                    .setTitle(
+                        "🎁 United League • Çekiliş"
+                    )
+                    .setDescription(
+                        `🎁 Ödül: **${formatMoney(prize)}**\n\n` +
+                        `⏰ Bitiş: <t:${Math.floor((Date.now() + duration) / 1000)}:R>\n\n` +
+                        `Katılmak için aşağıdaki butona bas.`
+                    )
+                    .setTimestamp();
+
+            await message.channel.send({
+                embeds: [embed],
+                components: [row]
+            });
+
+            scheduleGiveaway(id);
+
+            return;
+        }
+
+        /* =====================
+           ÇEKİLİŞ BUTONU
+        ===================== */
+
+        if (
+            command === ".yenikazanan"
+        ) {
+            if (
+                !isGiveawayStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Çekiliş Yetkilisi gerekli."
+                );
+            }
+
+            const finished =
+                Object.values(
+                    data.giveaways
+                )
+                    .filter(
+                        g =>
+                            g.guildId ===
+                                message.guild.id &&
+                            g.finished &&
+                            g.entries?.length
+                    )
+                    .at(-1);
+
+            if (!finished) {
+                return message.reply(
+                    "❌ Yeniden seçilecek çekiliş bulunamadı."
+                );
+            }
+
+            const winner =
+                finished.entries[
+                    Math.floor(
+                        Math.random() *
+                            finished.entries.length
+                    )
+                ];
+
+            getPlayer(winner).budget +=
+                finished.prize;
+
+            saveData();
+
+            return message.reply(
+                `🎉 Yeni kazanan: <@${winner}>`
+            );
+        }
+
+        /* =====================
+           TICKET
+        ===================== */
+
+        if (command === ".ticket") {
+            const existing =
+                message.guild.channels.cache.find(
+                    c =>
+                        c.type ===
+                            ChannelType.GuildText &&
+                        c.name ===
+                            `ticket-${message.author.id}`
+                );
+
+            if (existing) {
+                return message.reply(
+                    `❌ Zaten açık ticketin var: ${existing}`
+                );
+            }
+
+            const channel =
+                await message.guild.channels.create(
+                    {
+                        name:
+                            `ticket-${message.author.id}`,
+                        type:
+                            ChannelType.GuildText,
+                        permissionOverwrites: [
+                            {
+                                id:
+                                    message.guild
+                                        .roles
+                                        .everyone.id,
+                                deny: [
+                                    PermissionFlagsBits.ViewChannel
+                                ]
+                            },
+                            {
+                                id:
+                                    message.author.id,
+                                allow: [
+                                    PermissionFlagsBits.ViewChannel,
+                                    PermissionFlagsBits.SendMessages,
+                                    PermissionFlagsBits.ReadMessageHistory
+                                ]
+                            }
+                        ]
+                    }
+                );
+
+            await channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(
+                            "🎫 United League • Ticket"
+                        )
+                        .setDescription(
+                            `${message.author}, destek talebini buraya yaz.\n\n` +
+                            "Kapatmak için `.ticketkapat` kullan."
+                        )
+                ]
+            });
+
+            return message.reply(
+                `🎫 Ticket oluşturuldu: ${channel}`
+            );
+        }
+
+        /* =====================
+           TICKET KAPAT
+        ===================== */
+
+        if (command === ".ticketkapat") {
+            if (
+                !message.channel.name.startsWith(
+                    "ticket-"
+                )
+            ) {
+                return message.reply(
+                    "❌ Bu kanal bir ticket değil."
+                );
+            }
+
+            await message.reply(
+                "🔒 Ticket kapatılıyor..."
+            );
+
+            setTimeout(
+                () =>
+                    message.channel
+                        .delete()
+                        .catch(() => {}),
+                1500
+            );
+
+            return;
+        }
+
+        /* =====================
+           SİL
+        ===================== */
+
+        if (command === ".sil") {
+            if (!isAdmin(message.member)) {
+                return message.reply(
+                    "❌ Bu komutu sadece yönetici kullanabilir."
+                );
+            }
+
+            let amount =
+                parseInt(args[0]);
+
+            if (
+                !Number.isInteger(amount) ||
+                amount < 1
+            ) {
+                return message.reply(
+                    "❌ Kullanım: `.sil 100`"
+                );
+            }
+
+            amount =
+                Math.min(amount, 1000);
+
+            let remaining = amount;
+
+            while (remaining > 0) {
+                const chunk =
+                    Math.min(
+                        remaining,
+                        100
+                    );
+
+                const deleted =
+                    await message.channel.bulkDelete(
+                        chunk,
+                        true
+                    );
+
+                remaining -= deleted.size;
+
+                if (deleted.size === 0) break;
+
+                if (remaining > 0) {
+                    await new Promise(
+                        resolve =>
+                            setTimeout(
+                                resolve,
+                                700
+                            )
+                    );
+                }
+            }
+
+            const notice =
+                await message.channel.send(
+                    `🗑️ **${amount}** mesaja kadar silme işlemi tamamlandı.`
+                );
+
+            setTimeout(
+                () =>
+                    notice
+                        .delete()
+                        .catch(() => {}),
+                3000
+            );
+
+            return;
+        }
+
+        /* =====================
+           KİLİTLE
+        ===================== */
+
+        if (command === ".kilitle") {
+            if (
+                !isChannelStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Kanal Yetkilisi gerekli."
+                );
+            }
+
+            await message.channel.permissionOverwrites.edit(
+                message.guild.roles.everyone,
+                {
+                    SendMessages: false
+                }
+            );
+
+            return message.reply(
+                "🔒 Kanal kilitlendi."
+            );
+        }
+
+        /* =====================
+           KİLİT AÇ
+        ===================== */
+
+        if (command === ".kilitaç") {
+            if (
+                !isChannelStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Kanal Yetkilisi gerekli."
+                );
+            }
+
+            await message.channel.permissionOverwrites.edit(
+                message.guild.roles.everyone,
+                {
+                    SendMessages: null
+                }
+            );
+
+            return message.reply(
+                "🔓 Kanalın kilidi açıldı."
+            );
+        }
+
+        /* =====================
+           KICK
+        ===================== */
+
+        if (command === ".kick") {
+            if (
+                !isKickStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Kick Yetkilisi gerekli."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (!target) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            await target.kick(
+                `United League • ${message.author.tag}`
+            );
+
+            return message.reply(
+                `👢 ${target.user.tag} sunucudan atıldı.`
+            );
+        }
+
+        /* =====================
+           BAN
+        ===================== */
+
+        if (command === ".ban") {
+            if (
+                !isBanStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Ban Yetkilisi gerekli."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (!target) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            await target.ban({
+                reason:
+                    `United League • ${message.author.tag}`
+            });
+
+            return message.reply(
+                `🔨 ${target.user.tag} banlandı.`
+            );
+        }
+
+        /* =====================
+           MUTE
+        ===================== */
+
+        if (command === ".mute") {
+            if (
+                !isMuteStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Mute Yetkilisi gerekli."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (!target) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            const muted =
+                await getOrCreateRole(
+                    message.guild,
+                    "Muted",
+                    "#747F8D",
+                    false
+                );
+
+            await target.roles.add(muted);
+
+            for (
+                const channel
+                of message.guild.channels.cache.values()
+            ) {
+                if (
+                    channel.type ===
+                    ChannelType.GuildText
+                ) {
+                    await channel.permissionOverwrites
+                        .edit(
+                            muted,
+                            {
+                                SendMessages: false,
+                                AddReactions: false
+                            }
+                        )
+                        .catch(() => {});
+                }
+            }
+
+            return message.reply(
+                `🔇 ${target} susturuldu.`
+            );
+        }
+
+        /* =====================
+           UNMUTE
+        ===================== */
+
+        if (command === ".unmute") {
+            if (
+                !isMuteStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Mute Yetkilisi gerekli."
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (!target) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            const muted =
+                message.guild.roles.cache.find(
+                    r => r.name === "Muted"
+                );
+
+            if (muted) {
+                await target.roles.remove(
+                    muted
+                );
+            }
+
+            return message.reply(
+                `🔊 ${target} susturması kaldırıldı.`
+            );
+        }
+
+        /* =====================
+           EMBED
+        ===================== */
+
+        if (command === ".embed") {
+            if (!isAdmin(message.member)) {
+                return message.reply(
+                    "❌ Bu komutu sadece yönetici kullanabilir."
+                );
+            }
+
+            const text =
+                args.join(" ");
+
+            const split =
+                text.split("|");
+
+            const title =
+                split.shift()?.trim() ||
+                "United League";
+
+            const description =
+                split.join("|").trim() ||
+                "United League";
+
+            return message.channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(title)
+                        .setDescription(
+                            description
+                        )
+                        .setTimestamp()
+                ]
+            });
+        }
+
+        /* =====================
+           TWEET
+        ===================== */
+
+        if (command === ".tweet") {
+            if (
+                !isMediaStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Medya Yetkilisi gerekli."
+                );
+            }
+
+            const text =
+                args.join(" ");
+
+            const embed =
+                new EmbedBuilder()
+                    .setColor("#5865F2")
+                    .setTitle(
+                        "🐦 United League • Tweet"
+                    )
+                    .setDescription(
+                        text ||
+                            "United League"
+                    )
+                    .setTimestamp();
+
+            const attachment =
+                message.attachments.first();
+
+            if (
+                attachment &&
+                attachment.contentType?.startsWith(
+                    "image/"
+                )
+            ) {
+                embed.setImage(
+                    attachment.url
+                );
+            }
+
+            return message.channel.send({
+                embeds: [embed]
+            });
+        }
+
+        /* =====================
+           HABER
+        ===================== */
+
+        if (command === ".haber") {
+            if (
+                !isMediaStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ Medya Yetkilisi gerekli."
+                );
+            }
+
+            const text =
+                args.join(" ");
+
+            return message.channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#ED4245")
+                        .setTitle(
+                            "📰 United League • Son Dakika"
+                        )
+                        .setDescription(
+                            text
+                        )
+                        .setTimestamp()
+                ]
+            });
+        }
+
+        /* =====================
+           DM
+        ===================== */
+
+        if (command === ".dm") {
+            if (
+                !isDMStaff(
+                    message.member
+                )
+            ) {
+                return message.reply(
+                    "❌ DM/SM Yetkilisi gerekli."
+                );
+            }
+
+            const targetText =
+                args.shift();
+
+            const dmText =
+                args.join(" ");
+
+            if (
+                !targetText ||
+                !dmText
+            ) {
+                return message.reply(
+                    "❌ Kullanım: `.dm all Mesaj` veya `.dm @oyuncu Mesaj`"
+                );
+            }
+
+            const embed =
+                new EmbedBuilder()
+                    .setColor("#5865F2")
+                    .setTitle(
+                        "United League"
+                    )
+                    .setDescription(
+                        dmText
+                    )
+                    .setFooter({
+                        text:
+                            "United League • Resmî Bildirim"
+                    })
+                    .setTimestamp();
+
+            if (
+                targetText.toLowerCase() ===
+                "all"
+            ) {
+                let sent = 0;
+
+                for (
+                    const member
+                    of message.guild.members.cache.values()
+                ) {
+                    if (
+                        member.user.bot
+                    ) continue;
+
+                    try {
+                        await member.send({
+                            embeds: [embed]
+                        });
+
+                        sent++;
+                    } catch {}
+
+                    await new Promise(
+                        resolve =>
+                            setTimeout(
+                                resolve,
+                                100
+                            )
+                    );
+                }
+
+                return message.reply(
+                    `📨 DM gönderimi tamamlandı. Başarılı: **${sent}**`
+                );
+            }
+
+            const target =
+                message.mentions.members.first();
+
+            if (!target) {
+                return message.reply(
+                    "❌ Oyuncuyu etiketle."
+                );
+            }
+
+            try {
+                await target.send({
+                    embeds: [embed]
+                });
+
+                return message.reply(
+                    `📨 ${target} kullanıcısına DM gönderildi.`
+                );
+            } catch {
+                return message.reply(
+                    "❌ Kullanıcının DM'leri kapalı."
+                );
+            }
+        }
+
+        /* =====================
+           ŞİRKETLER
+        ===================== */
+
+        if (command === ".şirketler") {
+            const text =
+                Object.entries(
+                    NPC_COMPANIES
+                ).map(
+                    ([name, info]) =>
+                        `🏢 **${name}** — Şirket: **%${info.company}** | Sponsor: **%${info.sponsor}**`
+                ).join("\n");
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#FEE75C")
+                        .setTitle(
+                            "🏢 NPC Şirketleri"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           ŞİRKET BAŞVURU
+        ===================== */
+
+        if (
+            command === ".şirketbaşvur"
+        ) {
+            const team =
+                getUserTeam(
+                    message.author.id
+                );
+
+            if (!team) {
+                return message.reply(
+                    "❌ Şirket başvurusu için takımın olmalı."
+                );
+            }
+
+            const name =
+                args.join(" ");
+
+            const company =
+                NPC_COMPANIES[name];
+
+            if (!company) {
+                return message.reply(
+                    "❌ Böyle bir NPC şirketi yok."
+                );
+            }
+
+            const accepted =
+                npcDecision(
+                    company.company
+                );
+
+            if (!accepted) {
+                return message.reply(
+                    `❌ **${name}** şirketi başvurunu reddetti.`
+                );
+            }
+
+            team.company = name;
+
+            saveData();
+
+            return message.reply(
+                `🏢 **${name}** şirketi **${team.name}** ile anlaşma yaptı!`
+            );
+        }
+
+        /* =====================
+           ŞİRKET BAŞVURULARIM
+        ===================== */
+
+        if (
+            command ===
+            ".şirketbaşvurularım"
+        ) {
+            const team =
+                getUserTeam(
+                    message.author.id
+                );
+
+            return message.reply(
+                team?.company
+                    ? `🏢 Şirketin: **${team.company}**`
+                    : "🏢 Henüz şirket anlaşman yok."
+            );
+        }
+
+        /* =====================
+           SPONSORLAR
+        ===================== */
+
+        if (command === ".sponsorlar") {
+            const text =
+                Object.entries(
+                    NPC_COMPANIES
+                ).map(
+                    ([name, info]) =>
+                        `🤝 **${name}** — Sponsor şansı: **%${info.sponsor}**`
+                ).join("\n");
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#57F287")
+                        .setTitle(
+                            "🤝 NPC Sponsorları"
+                        )
+                        .setDescription(text)
+                ]
+            });
+        }
+
+        /* =====================
+           SPONSOR BAŞVURU
+        ===================== */
+
+        if (
+            command === ".sponsorbaşvur"
+        ) {
+            const team =
+                getUserTeam(
+                    message.author.id
+                );
+
+            if (!team) {
+                return message.reply(
+                    "❌ Sponsor başvurusu için takımın olmalı."
+                );
+            }
+
+            const name =
+                args.join(" ");
+
+            const sponsor =
+                NPC_COMPANIES[name];
+
+            if (!sponsor) {
+                return message.reply(
+                    "❌ Böyle bir NPC sponsoru yok."
+                );
+            }
+
+            const accepted =
+                npcDecision(
+                    sponsor.sponsor
+                );
+
+            if (!accepted) {
+                return message.reply(
+                    `❌ **${name}** sponsorluğu başvurunu reddetti.`
+                );
+            }
+
+            team.sponsor = name;
+
+            saveData();
+
+            return message.reply(
+                `🤝 **${name}** artık **${team.name}** takımının sponsoru!`
+            );
+        }
+
+        /* =====================
+           SPONSORLARIM
+        ===================== */
+
+        if (command === ".sponsorlarım") {
+            const team =
+                getUserTeam(
+                    message.author.id
+                );
+
+            return message.reply(
+                team?.sponsor
+                    ? `🤝 Sponsorun: **${team.sponsor}**`
+                    : "🤝 Henüz sponsorun yok."
+            );
+        }
+
+        /* =====================
+           REKLAM PAKETLERİ
+        ===================== */
+
+        if (
+            command === ".reklampaketleri"
+        ) {
+            const text =
+                Object.entries(
+                    AD_PACKAGES
+                ).map(
+                    ([name, price]) =>
+                        `📢 **${name}** — **${formatMoney(price)}**`
+                ).join("\n");
+
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#FEE75C")
+                        .setTitle(
+                            "📢 Reklam Paketleri"
+                        )
+                        .setDescription(
+                            text +
+                            "\n\n" +
+                            "📌 600K€ sonrası @everyone/@here hakları artar.\n" +
+                            "📌 Maksimum 5 @everyone/@here hakkı.\n" +
+                            "📌 700K€ sonrası özel reklam kanalı açılabilir."
+                        )
+                ]
+            });
+        }
+
+        /* =====================
+           REKLAM
+        ===================== */
+
+        if (command === ".reklam") {
+            const packageName =
+                args.shift();
+
+            const adText =
+                args.join(" ");
+
+            if (
+                !packageName ||
+                !adText
+            ) {
+                return message.reply(
+                    "❌ Kullanım: `.reklam Bronz Reklam mesajı`"
+                );
+            }
+
+            const price =
+                AD_PACKAGES[packageName];
+
+            if (!price) {
+                return message.reply(
+                    "❌ Geçerli reklam paketi bulunamadı."
+                );
+            }
+
+            const player =
+                getPlayer(
+                    message.author.id
+                );
+
+            if (
+                player.budget < price
+            ) {
+                return message.reply(
+                    "❌ Reklam için yeterli bütçen yok."
+                );
+            }
+
+            player.budget -= price;
+
+            if (!data.ads[message.author.id]) {
+                data.ads[message.author.id] = {
+                    used: 0,
+                    everyone: 0,
+                    here: 0
+                };
+            }
+
+            data.ads[message.author.id].used++;
+
+            if (
+                packageName.toLowerCase() ===
+                "everyone"
+            ) {
+                data.ads[
+                    message.author.id
+                ].everyone++;
+            }
+
+            if (
+                packageName.toLowerCase() ===
+                "here"
+            ) {
+                data.ads[
+                    message.author.id
+                ].here++;
+            }
+
+            saveData();
+
+            return message.channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#5865F2")
+                        .setTitle(
+                            "📢 United League • Reklam"
+                        )
+                        .setDescription(
+                            adText
+                        )
+                        .setFooter({
+                            text:
+                                `Reklam paketi: ${packageName}`
+                        })
+                        .setTimestamp()
+                ]
+            });
+        }
+
+    } catch (err) {
+        console.error(
+            "Komut hatası:",
+            err
         );
-      }
 
-      if (!target) {
-        return message.reply(
-          "❌ Oyuncu etiketle."
-        );
-      }
-
-      await target.user
-        .send({
-          embeds: [
-            dmEmbed
-          ]
-        })
-        .catch(() => {});
-
-      return message.reply(
-        `📩 ${target} kişisine DM gönderildi.`
-      );
+        try {
+            await message.reply(
+                "❌ İşlem sırasında bir hata oluştu."
+            );
+        } catch {}
     }
-
-    /* =====================================================
-       ŞİRKETLER
-       ===================================================== */
-
-    if (
-      command ===
-        "şirketler" ||
-      command ===
-        "sirketler"
-    ) {
-      const list =
-        Object.entries(
-          BRANDS
-        )
-          .map(
-            ([name, data]) =>
-              `🏢 **${name}**
-Şirket kabul: **%${data.companyChance}**
-Sponsor kabul: **%${data.sponsorChance}**
-💰 Bütçe: **${money(
-                data.budget
-              )}**`
-          )
-          .join("\n\n");
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🏢 NPC ŞİRKETLER",
-            list
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       ŞİRKET BAŞVURU
-       ===================================================== */
-
-    if (
-      command ===
-        "şirketbaşvur" ||
-      command ===
-        "sirketbasvur"
-    ) {
-      const brand =
-        args.join(" ");
-
-      const data =
-        BRANDS[brand];
-
-      if (!data) {
-        return message.reply(
-          `❌ Marka bulunamadı.
-
-${Object.keys(
-            BRANDS
-          ).join(", ")}`
-        );
-      }
-
-      const accepted =
-        Math.random() *
-          100 <
-        data.companyChance;
-
-      db.companies[
-        message.author.id
-      ] = {
-        brand,
-        accepted,
-        date:
-          Date.now()
-      };
-
-      save();
-
-      return message.reply(
-        accepted
-          ? `🏢 **${brand}** şirket başvurun **KABUL EDİLDİ!**`
-          : `🏢 **${brand}** şirket başvurun **REDDEDİLDİ.**`
-      );
-    }
-
-    if (
-      command ===
-        "şirketbaşvurularım" ||
-      command ===
-        "sirketbasvurularim"
-    ) {
-      const data =
-        db.companies[
-          message.author.id
-        ];
-
-      if (!data) {
-        return message.reply(
-          "❌ Şirket başvurun yok."
-        );
-      }
-
-      return message.reply(
-        `🏢 Marka: **${data.brand}**
-📋 Durum: **${
-          data.accepted
-            ? "Kabul"
-            : "Red"
-        }**`
-      );
-    }
-
-    /* =====================================================
-       SPONSORLAR
-       ===================================================== */
-
-    if (
-      command ===
-      "sponsorlar"
-    ) {
-      const list =
-        Object.entries(
-          BRANDS
-        )
-          .map(
-            ([name, data]) =>
-              `🤝 **${name}** — Sponsor kabul şansı: **%${data.sponsorChance}**`
-          )
-          .join("\n");
-
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "🤝 NPC SPONSORLAR",
-            list
-          )
-        ]
-      });
-    }
-
-    if (
-      command ===
-        "sponsorbaşvur" ||
-      command ===
-        "sponsorbasvur"
-    ) {
-      const brand =
-        args.join(" ");
-
-      const data =
-        BRANDS[brand];
-
-      if (!data) {
-        return message.reply(
-          `❌ Marka bulunamadı.
-
-${Object.keys(
-            BRANDS
-          ).join(", ")}`
-        );
-      }
-
-      const accepted =
-        Math.random() *
-          100 <
-        data.sponsorChance;
-
-      db.sponsors[
-        message.author.id
-      ] = {
-        brand,
-        accepted,
-        date:
-          Date.now()
-      };
-
-      save();
-
-      return message.reply(
-        accepted
-          ? `🤝 **${brand}** sponsor başvurun **KABUL EDİLDİ!**`
-          : `🤝 **${brand}** sponsor başvurun **REDDEDİLDİ.**`
-      );
-    }
-
-    if (
-      command ===
-        "sponsorlarım" ||
-      command ===
-        "sponsorlarim"
-    ) {
-      const data =
-        db.sponsors[
-          message.author.id
-        ];
-
-      if (!data) {
-        return message.reply(
-          "❌ Sponsor başvurun yok."
-        );
-      }
-
-      return message.reply(
-        `🤝 Marka: **${data.brand}**
-📋 Durum: **${
-          data.accepted
-            ? "Kabul"
-            : "Red"
-        }**`
-      );
-    }
-
-    /* =====================================================
-       REKLAM
-       ===================================================== */
-
-    if (
-      command ===
-      "reklam"
-    ) {
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "📢 UNITED LEAGUE REKLAM PAKETLERİ",
-            `🥉 **Bronz:** 150K
-🥈 **Gümüş:** 300K
-🥇 **Altın:** 600K
-💎 **Platin:** 1.2M
-👑 **Legendary:** 2.4M
-🌟 **Ultimate:** 4.8M
-
-📢 **@everyone:** 100K
-📢 **@here:** 50K
-
-🎟️ Her paket: 1 reklam hakkı
-⭐ 600K sonrası haklar artırılır
-🔒 Maksimum @everyone/@here hakkı: 5
-📺 700K sonrası özel reklam kanalı sistemi`
-          )
-        ]
-      });
-    }
-
-    /* =====================================================
-       YARDIM
-       ===================================================== */
-
-    if (
-      command ===
-        "yardım" ||
-      command ===
-        "yardim" ||
-      command ===
-        "help"
-    ) {
-      return message.reply({
-        embeds: [
-          makeEmbed(
-            "📚 UNITED LEAGUE — TÜM KOMUTLAR",
-            `🏓 **Ping**
-\`.ping\`
-
-📝 **Kayıt**
-\`.kayıt\`
-\`.k @oyuncu\`
-
-👤 **Profil**
-\`.profil @oyuncu\`
-\`.istatistik @oyuncu\`
-
-💰 **Değer**
-\`.dver @oyuncu 5M\`
-\`.değer @oyuncu\`
-\`.değerler\`
-
-🏋️ **Antrenman**
-\`.ant\`
-\`.antrenman\`
-
-🥅 **Penaltı**
-\`.pen\`
-\`.penaltı\`
-
-💵 **Bütçe**
-\`.bütçe\`
-\`.bütçe @oyuncu\`
-\`.para @oyuncu 5M\`
-\`.paragönder @oyuncu 5M\`
-
-🏟️ **Takım**
-\`.takımoluştur Takım\`
-\`.takım\`
-\`.takımım\`
-\`.takımlar\`
-
-💰 **Takım Bütçesi**
-\`.takımbütçe\`
-\`.takımpara 5M\`
-\`.takımharca 5M\`
-\`.takımbütçegönder @Takım 5M\`
-
-👥 **Kadro**
-\`.kadro\`
-\`.kadro @oyuncu\`
-\`.kadrocikar @oyuncu\`
-
-📋 **Formasyon**
-\`.formasyon\`
-\`.formasyon 4-3-3\`
-\`.pozisyon @oyuncu ST\`
-
-🔄 **Transfer**
-\`.transfer @oyuncu Takım 10M\`
-\`.transferler\`
-\`.transfergeçmişi\`
-
-⚽ **Maç**
-\`.maç @takım1 @takım2\`
-\`.maçlar\`
-\`.maçsonucu\`
-
-🏆 **Lig**
-\`.lig\`
-\`.puan\`
-\`.golkrallığı\`
-\`.asistkrallığı\`
-\`.sezon\`
-
-🎫 **Ticket**
-\`.ticket\`
-\`.ticketkapat\`
-
-🛡️ **Moderasyon**
-\`.kick @oyuncu\`
-\`.ban @oyuncu\`
-\`.mute @oyuncu\`
-\`.unmute @oyuncu\`
-\`.sil 100\`
-\`.kilitle\`
-\`.kilitaç\`
-
-🎁 **Çekiliş**
-\`.çekiliş 5M€ 5sa\`
-\`.yenikazanan\`
-
-🐦 **Medya**
-\`.tweet Mesaj\`
-\`.haber Mesaj\`
-
-📩 **DM**
-\`.dm all Mesaj\`
-\`.dm @oyuncu Mesaj\`
-
-🏢 **Şirket**
-\`.şirketler\`
-\`.şirketbaşvur Adidas\`
-\`.şirketbaşvurularım\`
-
-🤝 **Sponsor**
-\`.sponsorlar\`
-\`.sponsorbaşvur Nike\`
-\`.sponsorlarım\`
-
-📢 **Reklam**
-\`.reklam\`
-
-❌ **Sunucu profili komutu yoktur.**`
-          )
-        ]
-      });
-    }
-
-  } catch (error) {
-    console.error(
-      "❌ Komut hatası:",
-      error
-    );
-
-    if (!message.replied) {
-      message.reply(
-        "❌ İşlem sırasında bir hata oluştu."
-      ).catch(() => {});
-    }
-  }
 });
 
-/* =========================================================
-   TOKEN
-   ========================================================= */
+/* =========================
+   ÇEKİLİŞ BUTONLARI
+========================= */
 
-if (!TOKEN) {
-  console.error(
-    "❌ TOKEN bulunamadı!"
-  );
+client.on("interactionCreate", async interaction => {
+    try {
+        if (!interaction.isButton()) return;
 
-  console.error(
-    "Railway > Variables > TOKEN ekle."
-  );
+        if (
+            !interaction.customId.startsWith(
+                "giveaway_"
+            )
+        ) {
+            return;
+        }
 
-  process.exit(1);
-}
+        const id =
+            interaction.customId.replace(
+                "giveaway_",
+                ""
+            );
+
+        const giveaway =
+            data.giveaways[id];
+
+        if (
+            !giveaway ||
+            giveaway.finished
+        ) {
+            return interaction.reply({
+                content:
+                    "❌ Bu çekiliş sona ermiş.",
+                ephemeral: true
+            });
+        }
+
+        if (
+            giveaway.entries.includes(
+                interaction.user.id
+            )
+        ) {
+            return interaction.reply({
+                content:
+                    "⚠️ Zaten çekilişe katıldın.",
+                ephemeral: true
+            });
+        }
+
+        giveaway.entries.push(
+            interaction.user.id
+        );
+
+        saveData();
+
+        return interaction.reply({
+            content:
+                "🎉 Çekilişe başarıyla katıldın!",
+            ephemeral: true
+        });
+    } catch (err) {
+        console.error(
+            "Giveaway interaction:",
+            err.message
+        );
+    }
+});
+
+/* =========================
+   BOTU BAŞLAT
+========================= */
 
 client.login(TOKEN);
