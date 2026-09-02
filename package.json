@@ -1,6 +1,7 @@
 {
-  "name": "united-league-bot",
+  "name": "futbol-bot-rp",
   "version": "1.0.0",
+  "description": "United League Discord Football RP Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
