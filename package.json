@@ -1,15 +1,12 @@
 {
-  "name": "futbol-bot-rp",
+  "name": "futbol-rp-bot",
   "version": "1.0.0",
-  "description": "United League Discord Football RP Bot",
+  "description": "Futbol RP Discord Botu",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "engines": {
-    "node": ">=24.17.0"
-  },
   "dependencies": {
-    "discord.js": "14.27.0"
+    "discord.js": "^14.0.0"
   }
 }
